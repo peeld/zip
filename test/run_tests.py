@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run public/zip.js tests in headless Firefox.
+"""Run the lib/, core/ and op tests in headless Firefox.
 
     python3 test/run_tests.py
 
@@ -7,18 +7,24 @@ Generates fixture zips with Info-ZIP `zip` and Python's zipfile, serves the repo
 on localhost, loads test/zip-test.html in headless Firefox, then verifies the
 zips the browser wrote with zipfile and `unzip -t`.
 """
+import base64
+import binascii
 import functools
 import gzip
+import hashlib
 import http.server
+import io
 import json
 import random
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
 import zipfile
+import zlib
 from urllib.parse import unquote
 from datetime import datetime, timezone
 from pathlib import Path
@@ -90,8 +96,191 @@ def make_fixtures(work: Path) -> dict:
     bad[-6] ^= 0xFF  # CRC in the trailer
     (work / "badcrc.gz").write_bytes(bad)
 
-    (work / "manifest.json").write_text(json.dumps({"zips": zips, "sources": names}))
+    # base64 fixtures. encodebytes wraps at 76 columns with a final newline, like GNU base64.
+    rnd = SOURCES["random.bin"]
+    (work / "random.b64").write_bytes(base64.encodebytes(rnd))
+    (work / "random.w0.b64").write_bytes(base64.b64encode(rnd))
+    (work / "random-url.txt").write_bytes(base64.urlsafe_b64encode(rnd[:1000]).rstrip(b"="))
+    png = b"\x89PNG\r\n\x1a\n" + random.Random(4).randbytes(5000)
+    (work / "png.bin").write_bytes(png)
+    (work / "pixel.txt").write_bytes(b"  data:image/png;base64," + base64.b64encode(png) + b"\n")
+    (work / "concat.b64").write_bytes(base64.encodebytes(b"ab") + base64.encodebytes(b"cde") + base64.encodebytes(b"f"))
+    (work / "not.b64").write_bytes(b"<html>hello</html>")
+    make_uu_fixtures(work, png)
+    make_hex_fixtures(work)
+
+    tars = make_tar_fixtures(work, src)
+    hashes = make_hash_fixtures(work, src)
+    (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "sources": names, "long": LONG, "hashes": hashes}))
     return {"zips": zips}
+
+
+def uu_block(name: str, data: bytes, backtick=True, mode="644") -> bytes:
+    """A uuencoded file the way GNU sharutils writes it ("`" for zero when backtick is set)."""
+    lines = [binascii.b2a_uu(data[i:i + 45], backtick=backtick) for i in range(0, len(data), 45)]
+    end = b"`\n" if backtick else b" \n"
+    return f"begin {mode} {name}\n".encode() + b"".join(lines) + end + b"end\n"
+
+
+def make_uu_fixtures(work: Path, png: bytes):
+    rnd = SOURCES["random.bin"]
+    (work / "random.uu").write_bytes(uu_block("random.bin", rnd))
+    (work / "empty.uu").write_bytes(uu_block("empty.txt", b""))
+    # Space for zero, CRLF line ends, trailing spaces stripped (as some mailers do).
+    spaces = uu_block("unicodé 名前.txt", SOURCES["unicodé 名前.txt"], backtick=False)
+    (work / "spaces.uue").write_bytes(b"\r\n".join(l.rstrip(b" ") for l in spaces.split(b"\n")))
+    # An email with two files and text around them; the second is `uuencode -m` (base64).
+    (work / "mail.txt").write_bytes(
+        b"From: someone\nSubject: files\n\nHere you go:\n\n" + uu_block("dir/hello.txt", SOURCES["hello.txt"])
+        + b"\nand the picture:\n" + b"begin-base64 600 pixel.png\n" + base64.encodebytes(png) + b"====\n-- \nbye\n")
+    (work / "cut.uu").write_bytes(uu_block("random.bin", rnd)[:2000])
+    (work / "bad.uu").write_bytes(b"begin 644 x.html\nM<html>{hello}</html>" + b"a" * 40 + b"\n`\nend\n")
+
+
+def make_hex_fixtures(work: Path):
+    """Dumps written by the real xxd, hexdump and od (unhex reads the first two, rejects od)."""
+    def tool(args, data: bytes) -> bytes:
+        return subprocess.run(args, input=data, capture_output=True, check=True).stdout
+
+    rnd = SOURCES["random.bin"]
+    (work / "random.xxd").write_bytes(tool(["xxd"], rnd))
+    (work / "random.p.hex").write_bytes(tool(["xxd", "-p"], rnd[:10000]))
+    (work / "hello.xxd").write_bytes(tool(["xxd", "-u", "-c", "8", "-g", "1"], SOURCES["unicodé 名前.txt"]))
+    # Runs of repeated 16-byte lines, which hexdump -C collapses into '*'.
+    rep = b"\0" * 100 + rnd[:5000] + b"\0" * 64 + b"abc"
+    (work / "rep.bin").write_bytes(rep)
+    (work / "rep.hexdump").write_bytes(tool(["hexdump", "-C"], rep))
+    (work / "hello.od").write_bytes(tool(["od", "-x"], SOURCES["hello.txt"][:100]))
+    (work / "intel.hex").write_bytes(b":10010000214601360121470136007EFE09D2190140\n:00000001FF\n")
+
+
+HASH_ALGOS = ["md5", "sha1", "sha256", "sha384", "sha512"]
+
+
+def all_hashes(data: bytes) -> dict:
+    h = {a: hashlib.new(a, data).hexdigest() for a in HASH_ALGOS}
+    h["crc32"] = f"{zlib.crc32(data):08x}"
+    return h
+
+
+def make_hash_fixtures(work: Path, src: Path) -> dict:
+    """Reference hashes from hashlib/zlib, and checksum lists written by the real coreutils tools."""
+    rnd = SOURCES["random.bin"]
+    # Every length up to 300 crosses the 55/56/64 and 111/112/128 padding edges.
+    prefixes = [all_hashes(rnd[:n]) for n in range(301)]
+    files = {n: all_hashes(d) for n, d in SOURCES.items()}
+    names = sorted(SOURCES)
+
+    def tool(args, cwd=src) -> bytes:
+        return subprocess.run(args, cwd=cwd, capture_output=True, check=True).stdout
+
+    (work / "SHA256SUMS").write_bytes(tool(["sha256sum", *names]))
+    (work / "tag.md5").write_bytes(tool(["md5sum", "--tag", *names]))
+    (work / "star.sha1").write_bytes(tool(["sha1sum", "-b", "hello.txt", "empty.txt"]))
+    odd = work / "odd"
+    odd.mkdir()
+    (odd / "back\\slash.txt").write_bytes(b"x")
+    (odd / "new\nline.txt").write_bytes(b"y")
+    (work / "odd.sha256").write_bytes(tool(["sha256sum", "back\\slash.txt", "new\nline.txt"], cwd=odd))
+    (work / "odd.tag").write_bytes(tool(["sha512sum", "--tag", "back\\slash.txt"], cwd=odd))
+    crc = lambda n: f"{zlib.crc32(SOURCES[n]):08X}"
+    (work / "check.sfv").write_bytes(f"; made by hand\r\nhello.txt {crc('hello.txt')}\r\ndir/sub/nested.csv {crc('dir/sub/nested.csv')}\r\n".encode())
+    return {"prefixes": prefixes, "files": files, "x": all_hashes(b"x"), "y": all_hashes(b"y")}
+
+
+def verify_sums(work: Path, results: list):
+    """Check the checksum lists the browser wrote with sha256sum -c / md5sum -c."""
+    tagged = work / "written.CHECKSUMS"
+    if tagged.exists():
+        # Mixed tagged lists: split by tag, since coreutils < 9 has no `cksum -c`.
+        lines = tagged.read_text().splitlines(keepends=True)
+        for tag in ("SHA256", "SHA512"):
+            (work / f"written.CHECKSUMS.{tag}").write_text("".join(l for l in lines if l.startswith(tag + " (")))
+    for name, cmd in [("written.SHA256SUMS", "sha256sum"), ("written.MD5SUMS", "md5sum"),
+                      ("written.CHECKSUMS.SHA256", "sha256sum"), ("written.CHECKSUMS.SHA512", "sha512sum")]:
+        p = work / name
+        if not p.exists():
+            results.append(f"FAIL {name} was not uploaded")
+            continue
+        r = subprocess.run([cmd, "--strict", "-c", str(p)], cwd=work / "src", capture_output=True, text=True)
+        ok_lines = r.stdout.count(": OK")
+        results.append(f"{'PASS' if r.returncode == 0 and ok_lines == len(SOURCES) else 'FAIL'} {name}: {cmd} -c ({ok_lines} OK{', ' + r.stderr.strip() if r.stderr.strip() else ''})")
+    p = work / "written.odd.sha256"
+    if p.exists():
+        r = subprocess.run(["sha256sum", "--strict", "-c", str(p)], cwd=work / "odd", capture_output=True, text=True)
+        results.append(f"{'PASS' if r.returncode == 0 and r.stdout.count(': OK') == 2 else 'FAIL'} written.odd.sha256: escaped names pass sha256sum -c ({r.stdout.strip()!r} {r.stderr.strip()})")
+    else:
+        results.append("FAIL written.odd.sha256 was not uploaded")
+
+
+# Over 100 bytes with no '/' that splits it into ustar's 155 + 100: needs a GNU 'L' or pax header.
+LONG = "deep/" + "d" * 120 + "/" + "f" * 110 + ".txt"
+TAR_MTIME = 1715000000
+
+
+def make_tar_fixtures(work: Path, src: Path) -> list:
+    """Tars in each format Python writes (+ GNU tar if present), with a dir, a symlink and a long name."""
+    def add_all(t: tarfile.TarFile, long=True):
+        d = tarfile.TarInfo("dir")
+        d.type, d.mode, d.mtime = tarfile.DIRTYPE, 0o755, TAR_MTIME
+        t.addfile(d)
+        for n, data in SOURCES.items():
+            i = tarfile.TarInfo(n)
+            i.size, i.mtime = len(data), TAR_MTIME
+            t.addfile(i, io.BytesIO(data))
+        l = tarfile.TarInfo("link-to-hello")
+        l.type, l.linkname = tarfile.SYMTYPE, "hello.txt"
+        t.addfile(l)
+        if long:
+            i = tarfile.TarInfo(LONG)
+            i.size = 5
+            t.addfile(i, io.BytesIO(b"long\n"))
+
+    names = list(SOURCES)
+    tars = []
+    for fmt, label, long in ((tarfile.USTAR_FORMAT, "ustar", False), (tarfile.GNU_FORMAT, "gnu", True),
+                             (tarfile.PAX_FORMAT, "pax", True)):
+        with tarfile.open(work / f"{label}.tar", "w", format=fmt, encoding="utf-8") as t:
+            add_all(t, long)
+        tars.append({"file": f"{label}.tar", "count": len(names) + long, "check": names, "long": long})
+    with tarfile.open(work / "pax.tar.gz", "w:gz", format=tarfile.PAX_FORMAT) as t:
+        add_all(t)
+    tars.append({"file": "pax.tar.gz", "count": len(names) + 1, "check": names, "long": True})
+    if shutil.which("tar"):
+        subprocess.run(["tar", "-czf", str(work / "gnutar.tgz"), "."], cwd=src, check=True)
+        tars.append({"file": "gnutar.tgz", "count": len(names), "check": names, "prefix": "./"})
+
+    # Flip a byte in the second header: its checksum no longer matches.
+    raw = bytearray((work / "ustar.tar").read_bytes())
+    raw[512 + 10] ^= 0xFF
+    (work / "corrupt.tar").write_bytes(raw)
+    return tars
+
+
+def verify_tar(work: Path, results: list):
+    """Check the tars the browser wrote with Python's tarfile and GNU `tar -t`."""
+    want = dict(SOURCES)
+    want[LONG] = b"long\n"
+    for name in ("written.tar", "written.tar.gz"):
+        def check(ok, msg):
+            results.append(f"{'PASS' if ok else 'FAIL'} {name}: {msg}")
+        p = work / name
+        if not p.exists():
+            check(False, "was not uploaded")
+            continue
+        with tarfile.open(p) as t:
+            files = {m.name: m for m in t.getmembers() if m.isfile()}
+            check(sorted(files) == sorted(want), f"names ({len(files)} files)")
+            for n, data in want.items():
+                if n in files:
+                    check(t.extractfile(files[n]).read() == data, f"content {n[:40]}")
+            dirs = sorted(m.name for m in t.getmembers() if m.isdir())
+            check(dirs == ["deep", "deep/" + "d" * 120, "dir", "dir/sub"], f"folder entries {[d[:12] for d in dirs]}")
+            check(files["hello.txt"].mtime == TAR_MTIME and files["hello.txt"].mode == 0o644, "mtime and mode")
+        check(p.stat().st_size % 10240 == 0 or name.endswith(".gz"), "padded to 10 KB records")
+        if shutil.which("tar"):
+            r = subprocess.run(["tar", "-tf", str(p)], capture_output=True, text=True)
+            check(r.returncode == 0 and LONG in r.stdout.splitlines(), f"tar -t {r.stderr.strip()}")
 
 
 def verify_written(path: Path, label: str, results: list):
@@ -224,6 +413,8 @@ def main():
             results.append(f"FAIL {name} was not uploaded")
 
     verify_gzip(work, results)
+    verify_tar(work, results)
+    verify_sums(work, results)
 
     print("\n".join(results))
     fails = sum(r.startswith("FAIL") for r in results)

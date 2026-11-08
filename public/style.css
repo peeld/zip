@@ -55,6 +55,30 @@ section[hidden], table[hidden], .viewer[hidden], .viewer pre[hidden] { display: 
 
 .drop { border: 1px dashed var(--dim); padding: 1rem; margin: 0 0 1rem; color: var(--dim); line-height: 1.9; }
 .drop.over { border-color: var(--hi); color: var(--hi); background: #a6e3ad14; }
+
+/* Files dropped or chosen this visit, listed inside the drop zone. */
+.files { margin-top: .75rem; line-height: 1.45; max-height: 14rem; overflow: auto; color: var(--fg); }
+.files[hidden] { display: none; }
+.file { display: flex; gap: 1.5ch; align-items: baseline; }
+.file .name { flex: 1; min-width: 0; display: flex; white-space: nowrap; }
+.file .name > span { overflow: hidden; text-overflow: ellipsis; }
+.file .dir { color: var(--dim); min-width: 2ch; }
+.file .base { flex-shrink: 0; max-width: 100%; }
+.file.muted { border-bottom: 1px dashed var(--dim); margin-bottom: .25rem; }
+#file-view .viewer { margin: 0 0 1rem; }
+.products a.base { color: var(--hi); text-decoration: underline dotted; text-underline-offset: 3px; }
+.products a.base:hover, .products a.base:focus-visible { background: var(--fg); color: var(--bg); outline: 0; }
+#file-view .viewer pre { max-height: 16rem; }
+
+/* Wide screens: drop zone, files and prompt on the left; command output on the right.
+   Narrow screens stack them in the same order. */
+@media (min-width: 1100px) {
+  body { max-width: none; }
+  .layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 3ch; align-items: start; }
+  .side { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow: auto; }
+  #out { margin-top: 0; padding-left: 3ch; border-left: 1px dashed var(--dim); min-height: 10rem; }
+  #out section:first-child, #out > :first-child { margin-top: 0; }
+}
 .row { display: flex; flex-wrap: wrap; gap: .5rem 1.5ch; align-items: center; margin: .75rem 0; }
 
 /* Buttons look like [ label ]; hover/focus is reverse video. */

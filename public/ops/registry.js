@@ -6,7 +6,10 @@
 // command is run.
 //
 // `input` says which files the op takes from the drop zone at the top of the
-// page ({ accept, multiple, folders }; accept uses <input accept> syntax).
+// page ({ accept, sniff, multiple, folders }; accept uses <input accept> syntax).
+// `sniff` lists content types (lib/magic.js sniffFile: 'zip', 'gz', 'tar.gz', …)
+// the op takes: a dropped file whose content is recognised goes by that, and
+// `accept` (the file name) is the fallback when it isn't.
 // Dropped files go to the running op if it takes them, otherwise to the first
 // op in this list that does, so put specific ops (unzip: .zip only) before
 // catch-alls (zip: anything).
@@ -16,16 +19,39 @@
 
 // `group` is the heading the op is listed under in `help` (GROUPS gives the
 // heading order); `help <group>` lists just that group.
-export const GROUPS = { archive: 'archives', compress: 'compression' };
+export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'encoding', check: 'checksums' };
 
 export const OPS = [
   { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
-    input: { accept: '.zip,application/zip' } },
+    input: { accept: '.zip,application/zip', sniff: ['zip'] } },
+  // untar before gunzip, so a .tar.gz opens as an archive. gunzip still takes
+  // one while it's the running command.
+  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar or .tar.gz and extract them.',
+    input: { accept: '.tar,.tgz,.tar.gz,application/x-tar', sniff: ['tar', 'tar.gz'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
-    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip' } },
+    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz'] } },
+  { id: 'unbase64', group: 'encode', title: 'Decode base64', description: 'Decode base64 text or a data: URL to a file.',
+    input: { accept: '.b64,.base64' } },
+  { id: 'uudecode', group: 'encode', title: 'Decode uuencoded files', description: 'Decode the uuencoded files in a text file.',
+    input: { accept: '.uu,.uue', sniff: ['uu'] } },
+  { id: 'unhex', group: 'encode', title: 'Decode a hex dump', description: 'Turn an xxd, hexdump -C or plain hex dump back into a file.',
+    input: { accept: '.hex,.xxd', sniff: ['hex'] } },
   { id: 'zip', group: 'archive', title: 'Create a zip', description: 'Pack files and folders into a zip archive.',
     input: { multiple: true, folders: true } },
-  // Takes any single file, but only while it's the running command: zip comes first for drops.
+  // These take any files, but only while they're the running command: zip
+  // comes first for drops.
+  { id: 'tar', group: 'archive', title: 'Create a tar', description: 'Pack files and folders into a .tar or .tar.gz.',
+    input: { multiple: true, folders: true } },
   { id: 'gzip', group: 'compress', title: 'Compress with gzip', description: 'Compress one file to .gz.',
     input: {} },
+  { id: 'base64', group: 'encode', title: 'Encode as base64', description: 'Encode one file as base64 text.',
+    input: {} },
+  { id: 'uuencode', group: 'encode', title: 'uuencode a file', description: 'Encode one file as uuencoded text.',
+    input: {} },
+  { id: 'hex', group: 'encode', title: 'Hex dump a file', description: 'Write a hex dump of one file (xxd format).',
+    input: {} },
+  // Takes any files while running. A checksum list dropped with them
+  // (SHA256SUMS, *.md5, *.sfv, …) is read as the list to check against.
+  { id: 'hash', group: 'check', title: 'Checksums', description: 'Hash files (SHA-256, MD5, …) and check them against a hash or a SHA256SUMS list.',
+    input: { multiple: true, folders: true } },
 ];

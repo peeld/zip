@@ -1,5 +1,8 @@
 # Adding an operation (op)
 
+See also: [command-line.md](command-line.md) (how the shell runs ops and
+routes files) and [formats.md](formats.md) (format libraries, shared decisions).
+
 Each tool on the site is an **op**: one command, one folder. The user types
 the op's id at the prompt to run it. An op's code is downloaded only the
 first time its command runs, so adding ops doesn't slow down the first page load.
@@ -16,12 +19,22 @@ public/
     viewer.js                     viewer (text/hex panel), decodeText, hexDump
     streams.js                    countBytes, readStart, streamToBlob
     transform.js                  transformOp: the whole UI for a one-file-in, one-file-out op
+    archive.js                    archiveOp: the whole UI for opening an archive (list/view/save/extract all)
+    pack.js                       packOp: the whole UI for packing files into one archive
+    products.js                   products: the "made" list on the right (name = download link, [view] [x], [clear])
   lib/                            format/processing libraries shared by several ops
     zip.js                        createZip, readZip, openEntry, peekEntry, entryBlob
     gzip.js                       gzip, gunzip, parseHeader, gunzipName, isGzip
+    base64.js                     base64Encode, base64Decode, parseDataUrl, unbase64Name
+    uu.js                         uuEncode, readUu, openUuEntry
+    hex.js                        hexEncode, hexDecode, hexFormat, unhexSize
+    tar.js                        readTar, openTarEntry, tarWalk, createTar, tarName
+    crc32.js                      CRC_INIT, crc32Update, crc32Final (slicing-by-8)
+    hash.js                       ALGOS, hasher, hashStream, formatSums, parseSums, sumsFileAlgo, parseExpected
+    magic.js                      sniffType (magic numbers -> { ext, mime }), extForMime, sniffFile (routing), decodedName
   ops/
     registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
-    unzip/op.js  zip/op.js  gunzip/op.js  gzip/op.js
+    unzip/ untar/ zip/ tar/ gunzip/ gzip/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ hash/   one op.js each
 ```
 
 Rules:
@@ -66,8 +79,8 @@ Rules:
    ```
 
    **One file in, one file out?** (compress, decode, convert) Don't write the
-   UI: `core/transform.js` has it (file info, "Save as" name, progress,
-   optional `[ View ]` of the output). The whole op is then:
+   UI: `core/transform.js` has it (file info, output name, progress, and the
+   result listed under "made": the name downloads it, [view] [x]). The whole op is then:
 
    ```js
    import { transformOp } from '../../core/transform.js';
@@ -87,6 +100,22 @@ Rules:
    read the header when the file arrives, return `{ text, size }` to show,
    and throw to reject the file. See `ops/gunzip/op.js`.
 
+   **Opening an archive?** `core/archive.js` `archiveOp({ noun, open })` is
+   the whole unzip/untar UI (list, view, save one, extract all). `open(file)`
+   returns a reader: `{ entries, open(entry) → stream, peek?, each?, note? }`
+   (see the comment at the top of the file, and `ops/untar/op.js`).
+   `sizeLabel` changes the word after the total size (`uudecode`: 'decoded').
+
+   **Packing files into one archive?** `core/pack.js` `packOp` is the whole
+   zip/tar UI (name box, one option checkbox, create, the "made" list). It
+   packs every file in the list on the left: an op whose API has
+   `setFiles(files)` is sent the whole list by the shell whenever it changes,
+   instead of `addFiles`. See `ops/tar/op.js`.
+
+   **Results go on the right.** An op that makes files lists them with
+   `core/products.js` (`made.add(name, blob, { mime })`) rather than saving
+   straight away; the user downloads it by clicking its name. Source files stay on the left.
+
 2. Add the op to `public/ops/registry.js`. The `id` is the command the user
    types, so keep it short (`resize`, not `resize-image`). `group` must be a
    key of `GROUPS` (add one if needed; `GROUPS` order is the heading order in
@@ -101,8 +130,9 @@ Rules:
    `title` is a longer name ("Uppercase text"), shown by `help <cmd>`. The
    registry test requires `title`, `description` and a known `group`.
 
-   `input` (`{ accept, multiple, folders }`, `accept` in `<input accept>`
-   syntax) says which files the op takes. Leave it out if the op takes no
+   `input` (`{ accept, sniff, multiple, folders }`, `accept` in `<input accept>`
+   syntax) says which files the op takes. `sniff` lists content types from
+   `lib/magic.js` `sniffFile` (`['zip']`); a recognised type beats the name. Leave it out if the op takes no
    files. Dropped files go to the running op if it accepts them, otherwise to
    the first op in the registry that does. So list specific ops (`.zip` only)
    before catch-alls (`zip` takes anything). An op listed after a catch-all

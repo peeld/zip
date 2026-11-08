@@ -22,5 +22,4 @@ export const mount = transformOp({
   inspect,
   outName: (file, info) => gunzipName(file.name, info.header),
   transform: ({ file, onBytes }) => gunzip(file, { onBytes }),
-  preview: true,
 });

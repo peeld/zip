@@ -23,16 +23,23 @@
         |_|</pre>
 <p class="motd">local file tools. files never leave this tab.<br>type <b>help</b> for a list of commands.</p>
 
+<div class="layout">
+<div class="side">
 <div id="drop" class="drop">drop files anywhere on this page, or
   <button type="button" id="choose-files">choose files</button>
-  <button type="button" id="choose-folder">choose folder</button></div>
+  <button type="button" id="choose-folder">choose folder</button>
+  <div id="files" class="files" hidden></div>
+</div>
+<div id="file-view"></div>
 
 <form id="prompt" autocomplete="off">
   <label for="cmd" class="ps1">&gt;</label>
   <input id="cmd" name="cmd" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Command" autofocus>
 </form>
 <div id="hint" class="muted" aria-live="polite"></div>
+</div>
 
 <main id="out" aria-live="polite"><noscript>This tool needs JavaScript. It runs entirely in your browser.</noscript></main>
+</div>
 </body>
 </html>

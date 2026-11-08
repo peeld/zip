@@ -57,25 +57,30 @@ export function dropZone(zone, handler) {
 }
 
 /**
- * Does `input` (an op's registry `input`: { accept, multiple, folders }) take these files?
+ * Does `input` (an op's registry `input`: { accept, sniff, multiple, folders }) take these files?
  * accept uses the same syntax as <input accept>: ".zip,application/zip,image/*". Empty = anything.
+ * `types` (optional, one per file) is each file's content type from sniffFile ('zip', 'tar.gz', …)
+ * or null. When an op has `sniff` and a file's type is known, the type decides; `accept`
+ * (the name) is only the fallback for content no magic number identifies.
  */
-export function acceptsFiles(input, files) {
+export function acceptsFiles(input, files, types = []) {
   if (!input || !files.length) return false;
   if (files.length > 1 && !input.multiple) return false;
   const tokens = (input.accept || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
-  if (!tokens.length) return true;
-  return files.every(({ file }) => tokens.some((t) =>
-    t.startsWith('.') ? file.name.toLowerCase().endsWith(t)
-      : t.endsWith('/*') ? (file.type || '').startsWith(t.slice(0, -1))
-        : file.type === t));
+  return files.every(({ file }, i) => {
+    if (input.sniff && types[i]) return input.sniff.includes(types[i]);
+    return !tokens.length || tokens.some((t) =>
+      t.startsWith('.') ? file.name.toLowerCase().endsWith(t)
+        : t.endsWith('/*') ? (file.type || '').startsWith(t.slice(0, -1))
+          : file.type === t);
+  });
 }
 
 /** Which op gets dropped files: the running one if it takes them, else the first in the registry that does. */
-export function pickOp(ops, files, currentId) {
+export function pickOp(ops, files, currentId, types = []) {
   const cur = ops.find((o) => o.id === currentId);
-  if (cur && acceptsFiles(cur.input, files)) return cur;
-  return ops.find((o) => acceptsFiles(o.input, files)) || null;
+  if (cur && acceptsFiles(cur.input, files, types)) return cur;
+  return ops.find((o) => acceptsFiles(o.input, files, types)) || null;
 }
 
 // ---------------------------------------------------------------- output

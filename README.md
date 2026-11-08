@@ -1,6 +1,6 @@
 # ZipMedia
 
-File tools that run in the browser (currently: zip, unzip, gzip, gunzip). Files are never uploaded: all the
+File tools that run in the browser (currently: zip, unzip, tar, untar, gzip, gunzip, base64, unbase64, uuencode, uudecode, hex, unhex, hash). Files are never uploaded: all the
 work happens in the user's tab. The site is plain static files with no
 dependencies and no build step.
 
@@ -8,8 +8,11 @@ dependencies and no build step.
 
 The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
 list commands, then a command such as `unzip` or `zip`. Or just drop files:
-a single .zip opens in `unzip`, a .gz in `gunzip`, anything else goes to
-`zip`. `help <command>` says what a command takes. `#unzip` in the
+a single .zip opens in `unzip`, a .tar / .tar.gz in `untar`, a .gz in
+`gunzip`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, anything else goes to `zip`. To check a download, run `hash` and drop the file
+together with its `SHA256SUMS` (or paste the expected hash). A single file
+is matched by its content first (a gzipped tar called `backup.dat` still
+opens in `untar`), its name second. `help <command>` says what a command takes. `#unzip` in the
 URL runs that command on load.
 
 ## Layout
@@ -20,13 +23,13 @@ public/              deploy this folder as the web root
   app.js             command prompt; loads an op's code the first time its command runs
   style.css
   .htaccess          security headers for Apache
-  core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform)
-  lib/               shared processing libraries (zip.js, gzip.js)
+  core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform, archive, pack)
+  lib/               shared processing libraries (zip.js, tar.js, gzip.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js)
   ops/registry.js    list of ops (id = command name), in help order
   ops/<id>/op.js     one folder per operation
 test/
   run_tests.py       runs lib code and every op in headless Firefox, checks
-                     lazy loading, and verifies written zips with Python and `unzip -t`
+                     lazy loading, and verifies written zips/tars/checksum lists with Python, `unzip -t`, `tar -t` and `sha256sum -c`
 ```
 
 To add a new operation, see [docs/ref/adding-an-op.md](docs/ref/adding-an-op.md).
@@ -34,7 +37,7 @@ To add a new operation, see [docs/ref/adding-an-op.md](docs/ref/adding-an-op.md)
 ## Docs
 
 - `docs/todo/`: work in progress (`TODO.md` is the index)
-- `docs/ref/`: long-term reference (how ops work, how to add one)
+- `docs/ref/`: long-term reference (adding an op, the command line, format notes)
 - `docs/done/`: history
 
 ## Run locally
@@ -63,7 +66,7 @@ and `Permissions-Policy` only work as headers, so Pages doesn't get them.
 python3 test/run_tests.py
 ```
 
-Needs `firefox`, `zip` and `unzip` (and `gzip` for one extra check). Snap Firefox works too.
+Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od` and coreutils `sha256sum` / `md5sum` for fixtures and extra checks). Snap Firefox works too.
 
 ## Deploy
 
@@ -82,6 +85,20 @@ Needs `firefox`, `zip` and `unzip` (and `gzip` for one extra check). Snap Firefo
 | Choose where to save the zip | save dialog | download | download |
 | Extract all into a folder | folder picker | one download per file | one download per file |
 | gzip / gunzip | yes | yes | 16.4+ |
+| tar / untar (.tar.gz) | yes | yes | 16.4+ |
+| base64 / unbase64 | yes | yes | yes |
+| uuencode / uudecode | yes | yes | yes |
+| hex / unhex | yes | yes | yes |
+| hash (copy needs https or localhost) | yes | yes | yes |
+
+## Limits of lib/tar.js
+
+- Reads ustar, pax and GNU tars, plain or gzipped. Symlinks and hard links
+  are listed but not extracted; device, fifo and sparse entries are skipped.
+- A .tar.gz can only be read from the start: viewing or saving one file
+  decompresses everything before it.
+- Written tars have been checked with GNU tar and Python's tarfile. Files over
+  8 GB use a pax size header but haven't been tested with a real file.
 
 ## Limits of lib/zip.js
 

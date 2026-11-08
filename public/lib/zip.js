@@ -7,6 +7,8 @@
 // files / >65535 entries), CRC-32 verification on extract.
 // Not supported: encryption, split/spanned archives, other compression methods.
 
+import { crc32Update } from './crc32.js';
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const MAX16 = 0xffff;
@@ -22,27 +24,12 @@ const FLAG_UTF8 = 0x0800;
 
 // ---------------------------------------------------------------- CRC-32
 
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
-  }
-  return t;
-})();
-
-function crcUpdate(crc, bytes) {
-  for (let i = 0; i < bytes.length; i++) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
-  return crc;
-}
-
 // Pass-through stream that computes CRC-32 + byte count of everything flowing
 // through it. If `expected` is given, the stream errors on mismatch.
 function crcTap(state, onBytes, expected) {
   return new TransformStream({
     transform(chunk, ctl) {
-      state.crc = crcUpdate(state.crc, chunk);
+      state.crc = crc32Update(state.crc, chunk);
       state.size += chunk.length;
       if (onBytes) onBytes(chunk.length);
       ctl.enqueue(chunk);

@@ -3,16 +3,27 @@
 // `help` lists ops by registry group; `help <group>` and `help <cmd>` narrow it.
 // An op's code is loaded only the first time it runs.
 // Files dropped anywhere (or chosen) go to the running op if it accepts them,
-// otherwise to the first op in the registry that does (see pickOp).
+// otherwise to the first op in the registry that does (see pickOp); a single
+// file is matched by its content first, its name second.
 // The URL hash names the running op (#zip, #unzip), so ops can be linked.
+// Source files on the left, results on the right: every file that arrives is
+// listed under the drop zone for the rest of the visit. Ops that take many
+// files (zip, tar, hash: `setFiles` in their API) always work on the whole
+// list; ops that take one file get the one dropped, or the one whose [use] is
+// clicked. [view] opens a file in the text/hex viewer, [x] forgets it. What an
+// op makes is listed in its own panel on the right (core/products.js).
 import { OPS, GROUPS } from './ops/registry.js';
 import { chooseFiles, filesFromDrop, pickOp } from './core/files.js';
+import { fmtBytes } from './core/ui.js';
 
 const out = document.getElementById('out');
 const form = document.getElementById('prompt');
 const input = document.getElementById('cmd');
 const hint = document.getElementById('hint');
 const drop = document.getElementById('drop');
+const fileList = document.getElementById('files');
+const fileView = document.getElementById('file-view');
+const uploaded = []; // { path, file }[] for this visit, in arrival order
 const loaded = new Map(); // op id -> { panel, api } (kept, so op state survives)
 let current = null; // id of the op on screen
 const past = []; // command history
@@ -112,6 +123,7 @@ async function runOp(op, cmd) {
     const mod = await import(`./ops/${op.id}/op.js`);
     body.replaceChildren();
     entry.api = mod.mount(body) || {};
+    entry.api.setFiles?.([...uploaded]);
   } catch (e) {
     body.textContent = `${op.id}: couldn't load: ${e.message}`;
     body.className = 'error';
@@ -138,17 +150,116 @@ function run(cmd) {
   else screen(cmd, line(`${name}: command not found. type 'help' for a list.`, 'error'));
 }
 
-/** Hand files ({ path, file }[]) to the right op. */
-async function openFiles(files) {
+/**
+ * Content types for routing (see pickOp). Only a single file is sniffed: the
+ * ops that sniff take one file, and a dropped folder shouldn't mean reading
+ * every file in it. lib/magic.js loads on the first drop, not with the page.
+ */
+async function sniff(files) {
+  if (files.length !== 1) return [];
+  try {
+    const { sniffFile } = await import('./lib/magic.js');
+    return [await sniffFile(files[0].file)];
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------- uploaded files
+
+const VIEW_BYTES = 64 * 1024; // how much of a file the viewer reads
+let view = null; // core/viewer.js panel, loaded on first [ view ]
+let viewing = null; // the entry on show in it
+
+const small = (text, onclick, label) => {
+  const b = el('button', { type: 'button', className: 'link', textContent: text, onclick });
+  b.setAttribute('aria-label', label);
+  return b;
+};
+const sameFile = (a, b) => a.path === b.path && a.file.size === b.file.size && a.file.lastModified === b.file.lastModified;
+
+/** Add files to the list (a file dropped twice is listed once). */
+function remember(files) {
+  for (const f of files) if (!uploaded.some((u) => sameFile(u, f))) uploaded.push(f);
+  renderFiles();
+}
+
+/** Send the list to every loaded op that works on all of it. */
+function syncSources() {
+  for (const { api } of loaded.values()) api?.setFiles?.([...uploaded]);
+}
+
+function forget(f) {
+  const i = uploaded.indexOf(f);
+  if (i >= 0) uploaded.splice(i, 1);
+  if (viewing === f) closeView();
+  renderFiles();
+}
+
+/** A path that keeps the file name visible: the folders part is what gets cut off. */
+function fileName(path) {
+  const cut = path.lastIndexOf('/') + 1;
+  return el('span', { className: 'name', title: path },
+    ...(cut ? [el('span', { className: 'dir', textContent: path.slice(0, cut) })] : []),
+    el('span', { className: 'base', textContent: path.slice(cut) }));
+}
+
+function renderFiles() {
+  syncSources();
+  fileList.hidden = !uploaded.length;
+  const rows = uploaded.map((f) => el('div', { className: 'file' },
+    fileName(f.path),
+    el('span', { className: 'num muted', textContent: fmtBytes(f.file.size) }),
+    el('span', { className: 'actions' },
+      small('view', () => viewFile(f), `view ${f.path}`),
+      small('use', () => route([f]), `open ${f.path} with ${current || 'the right command'}`),
+      small('x', () => forget(f), `remove ${f.path} from the list`))));
+  const head = el('div', { className: 'file muted' },
+    el('span', { className: 'name', textContent: `${uploaded.length} file${uploaded.length === 1 ? '' : 's'}` }),
+    el('span', { className: 'actions' }, small('clear', () => { uploaded.length = 0; closeView(); renderFiles(); }, 'clear the file list')));
+  fileList.replaceChildren(head, ...rows);
+}
+
+/** Show the start of an uploaded file in the text/hex viewer. */
+async function viewFile(f) {
+  if (!view) {
+    const { viewer } = await import('./core/viewer.js');
+    view = viewer();
+    fileView.append(view.el);
+  }
+  viewing = f;
+  try {
+    const bytes = new Uint8Array(await f.file.slice(0, VIEW_BYTES).arrayBuffer());
+    if (viewing === f) view.show(f.path, bytes, f.file.size);
+  } catch (e) {
+    if (viewing === f) view.error(f.path, e.message);
+  }
+  view.el.scrollIntoView({ block: 'nearest' });
+}
+
+function closeView() {
+  viewing = null;
+  view?.close();
+}
+
+/** New files from a drop or a chooser: list them, then open them. */
+function openFiles(files) {
   if (!files.length) return;
-  const op = pickOp(OPS, files, current);
+  remember(files);
+  return route(files);
+}
+
+/** Hand files ({ path, file }[]) to the right op. */
+async function route(files) {
+  if (!files.length) return;
+  const op = pickOp(OPS, files, current, await sniff(files));
   if (!op) {
     screen(null, line(`no command takes ${files.length > 1 ? 'these files' : files[0].path}.`, 'error'));
     setCurrent(null);
     return;
   }
   const api = op.id === current && loaded.get(op.id)?.api || await runOp(op, op.id);
-  api?.addFiles?.(files);
+  if (!api?.setFiles) api?.addFiles?.(files); // setFiles ops already have the whole list
 }
 
 // ---------------------------------------------------------------- input
