@@ -1,0 +1,56 @@
+# Test, then publish public/ to GitHub Pages.
+#
+# One-time setup in the repo: Settings -> Pages -> Build and deployment ->
+# Source: "GitHub Actions".
+#
+# Pull requests run the tests only. Pushes to main run the tests and deploy.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only one deploy at a time. Don't cancel a deploy that has already started.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Firefox comes preinstalled on ubuntu-latest. zip/unzip are needed for the fixtures and for `unzip -t`.
+      - name: Install zip tools
+        run: sudo apt-get update -q && sudo apt-get install -yq zip unzip
+      - name: Run tests
+        run: firefox --version && python3 test/run_tests.py
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      # Upload public/ as-is: no Jekyll, no build step. (.htaccess goes along but Pages ignores it.)
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deployment
+        uses: actions/deploy-pages@v4

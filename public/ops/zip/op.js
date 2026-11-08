@@ -1,8 +1,9 @@
 // Op: pack files and folders into a zip.
 import { el, button, row, fmtBytes, table, task, isAbort } from '../../core/ui.js';
-import { fileSource, prepareSave } from '../../core/files.js';
+import { prepareSave } from '../../core/files.js';
 import { createZip } from '../../lib/zip.js';
 
+// Files arrive from the page's drop zone through the returned addFiles().
 export function mount(root) {
   const pending = new Map(); // path inside zip -> File
   const t = task();
@@ -14,20 +15,19 @@ export function mount(root) {
   const make = button('Create zip', create, { primary: true, disabled: true });
 
   root.append(
-    fileSource({
-      label: 'Drop files or folders here',
-      multiple: true,
-      folders: true,
-      onFiles: (files) => {
-        for (const { path, file } of files) pending.set(path, file);
-        render();
-      },
-      extra: [clear, summary],
-    }),
+    row(summary, clear),
     list.el,
     row(el('label', {}, 'Name ', nameInput), el('label', {}, compress, ' Compress'), make),
     t.el,
   );
+
+  render();
+  return {
+    addFiles(files) {
+      for (const { path, file } of files) pending.set(path, file);
+      render();
+    },
+  };
 
   function render() {
     list.setRows([...pending].map(([path, file]) => [
@@ -36,7 +36,7 @@ export function mount(root) {
       button('remove', () => { pending.delete(path); render(); }, { link: true }),
     ]));
     const total = [...pending.values()].reduce((n, f) => n + f.size, 0);
-    summary.textContent = pending.size ? `${pending.size} files, ${fmtBytes(total)}` : '';
+    summary.textContent = pending.size ? `${pending.size} files, ${fmtBytes(total)}` : 'no files added yet';
     make.disabled = clear.disabled = pending.size === 0;
   }
 

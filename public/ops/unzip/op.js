@@ -1,11 +1,12 @@
 // Op: open a zip, list its contents, save single files or extract everything.
 import { button, el, fmtBytes, table, task, isAbort } from '../../core/ui.js';
 import { viewer } from '../../core/viewer.js';
-import { fileSource, download, pickDirectory, makeDirs, writeToDirectory, safePath } from '../../core/files.js';
+import { download, pickDirectory, makeDirs, writeToDirectory, safePath } from '../../core/files.js';
 import { readZip, openEntry, entryBlob, peekEntry } from '../../lib/zip.js';
 
 const PEEK_BYTES = 1000;
 
+// The zip arrives from the page's drop zone through the returned addFiles().
 export function mount(root) {
   let zipFile = null;
   let entries = [];
@@ -16,17 +17,14 @@ export function mount(root) {
   let viewing = 0; // bumps on each view click, so a slow earlier read can't replace a later one
 
   root.append(
-    fileSource({
-      label: 'Drop a .zip file here',
-      accept: '.zip,application/zip',
-      chooseText: 'Choose zip…',
-      onFiles: ([{ file }]) => open(file),
-      extra: [extractAll],
-    }),
     t.el,
+    el('p', { className: 'row' }, extractAll),
     list.el,
     view.el,
   );
+
+  t.status('no zip open yet');
+  return { addFiles: ([{ file }]) => open(file) };
 
   async function open(file) {
     zipFile = null;

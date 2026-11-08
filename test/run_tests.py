@@ -164,15 +164,21 @@ def main():
     base = f"http://127.0.0.1:{server.server_port}"
     try:
         run_firefox(f"{base}/test/zip-test.html", until=done)
-        # Lazy loading: opening the site must fetch only the default op's code.
+        # Lazy loading: the bare page loads no op code; #unzip loads only unzip.
         requested.clear()
         run_firefox(f"{base}/public/index.html", seconds=8)
+        bare = list(requested)
+        requested.clear()
+        run_firefox(f"{base}/public/index.html#unzip", seconds=8)
+        hashed = list(requested)
     finally:
         server.shutdown()
     lazy = [
-        ("/public/ops/registry.js" in requested, "page loads ops/registry.js"),
-        ("/public/ops/unzip/op.js" in requested, "page loads the default op (unzip)"),
-        ("/public/ops/zip/op.js" not in requested, "page does not load the zip op until its tab is opened"),
+        ("/public/ops/registry.js" in bare, "page loads ops/registry.js"),
+        (not any(p.startswith("/public/ops/") and p.endswith("/op.js") for p in bare),
+         "bare page loads no op code until a command is run"),
+        ("/public/ops/unzip/op.js" in hashed, "#unzip runs the unzip op"),
+        ("/public/ops/zip/op.js" not in hashed, "#unzip does not load the zip op"),
     ]
 
     results = list(browser_result.get("log", []))

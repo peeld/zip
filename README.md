@@ -4,17 +4,24 @@ File tools that run in the browser (currently: open a zip, create a zip). Files 
 work happens in the user's tab. The site is plain static files with no
 dependencies and no build step.
 
+## Using it
+
+The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
+list commands, then a command such as `unzip` or `zip`. Or just drop files:
+a single .zip opens in `unzip`, anything else goes to `zip`. `#unzip` in the
+URL runs that command on load.
+
 ## Layout
 
 ```
 public/              deploy this folder as the web root
-  index.html         shell page
-  app.js             tab bar; loads each op's code the first time its tab opens
+  index.html         shell page (terminal look)
+  app.js             command prompt; loads an op's code the first time its command runs
   style.css
   .htaccess          security headers for Apache
   core/              shared UI and file I/O helpers (ui.js, files.js, viewer.js)
   lib/               shared processing libraries (zip.js)
-  ops/registry.js    list of ops, in tab order
+  ops/registry.js    list of ops (id = command name), in help order
   ops/<id>/op.js     one folder per operation
 test/
   run_tests.py       runs lib code and every op in headless Firefox, checks
@@ -37,6 +44,17 @@ ES modules don't load from `file://`, so serve the folder:
 python3 -m http.server -d public 8000
 # open http://localhost:8000
 ```
+
+## Deploy (GitHub Pages)
+
+`.github/workflows/pages.yml` runs the tests on every push and pull request.
+On a push to `main` it also publishes `public/` to GitHub Pages. One-time
+setup: in the repo, go to Settings -> Pages and set Source to **GitHub
+Actions**.
+
+Pages can't set response headers, so `.htaccess` is ignored there. The CSP
+and referrer policy are also `<meta>` tags in `index.html`. `frame-ancestors`
+and `Permissions-Policy` only work as headers, so Pages doesn't get them.
 
 ## Test
 

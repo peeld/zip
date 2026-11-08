@@ -5,20 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- connect-src 'none': this page cannot send data anywhere. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>ZipMedia</title>
+<!-- Same as the Referrer-Policy header in .htaccess, for hosts that can't set headers (GitHub Pages). -->
+<meta name="referrer" content="no-referrer">
+<title>zipmedia</title>
 <meta name="description" content="Work with files in your browser: zip, unzip and more. Nothing is uploaded.">
 <link rel="stylesheet" href="style.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
-<header>
-  <h1>ZipMedia</h1>
-  <p>Work with files in your browser. Your files never leave your device.</p>
-</header>
+<h1 class="sr-only">ZipMedia</h1>
+<pre class="banner" aria-hidden="true">
+      _                                  _  _
+ ____(_) _ __       _ __ ___    ___   __| |(_)  __ _
+|_  /| || '_ \     | '_ ` _ \  / _ \ / _` || | / _` |
+ / / | || |_) |    | | | | | ||  __/| (_| || || (_| |
+/___||_|| .__/  () |_| |_| |_| \___| \__,_||_| \__,_| ~~~ <a href="https://peeldev.com">by Peel Software Development</a>
+        |_|</pre>
+<p class="motd">local file tools. files never leave this tab.<br>type <b>help</b> for a list of commands.</p>
 
-<nav id="tabs" aria-label="Tools"></nav>
-<main id="ops"><noscript>This tool needs JavaScript. It runs entirely in your browser.</noscript></main>
+<div id="drop" class="drop">drop files anywhere on this page, or
+  <button type="button" id="choose-files">choose files</button>
+  <button type="button" id="choose-folder">choose folder</button></div>
 
-<footer>Everything runs in this tab. Nothing is uploaded.</footer>
+<form id="prompt" autocomplete="off">
+  <label for="cmd" class="ps1">&gt;</label>
+  <input id="cmd" name="cmd" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="Command" autofocus>
+</form>
+<div id="hint" class="muted" aria-live="polite"></div>
+
+<main id="out" aria-live="polite"><noscript>This tool needs JavaScript. It runs entirely in your browser.</noscript></main>
 </body>
 </html>

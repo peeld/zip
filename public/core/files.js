@@ -1,7 +1,7 @@
 // Local file input/output shared by all ops: picking, dropping, saving,
 // and writing into a folder. Nothing here touches the network.
 
-import { el, button, row, isAbort } from './ui.js';
+import { el, isAbort } from './ui.js';
 
 // ---------------------------------------------------------------- input
 // Files are passed around as { path, file }: `path` is relative to whatever
@@ -56,33 +56,25 @@ export function dropZone(zone, handler) {
 }
 
 /**
- * Standard input widget: a drop zone plus "choose" buttons.
- *   fileSource({ label, accept, multiple, folders, onFiles, extra })
- * onFiles receives a non-empty array of { path, file }.
- * `extra` nodes are appended to the button row.
+ * Does `input` (an op's registry `input`: { accept, multiple, folders }) take these files?
+ * accept uses the same syntax as <input accept>: ".zip,application/zip,image/*". Empty = anything.
  */
-export function fileSource({
-  label = 'Drop files here',
-  accept = '',
-  multiple = false,
-  folders = false,
-  chooseText = multiple ? 'Add files…' : 'Choose file…',
-  onFiles,
-  extra = [],
-}) {
-  const take = (files) => {
-    if (!multiple) files = files.slice(0, 1);
-    if (files.length) onFiles(files);
-  };
-  const zone = el('div', { className: 'drop', textContent: label });
-  dropZone(zone, async (dt) => take(await filesFromDrop(dt)));
-  return el('div', {},
-    zone,
-    row(
-      button(chooseText, async () => take(await chooseFiles({ multiple, accept }))),
-      folders && button('Add folder…', async () => take(await chooseFiles({ folder: true }))),
-      ...extra,
-    ));
+export function acceptsFiles(input, files) {
+  if (!input || !files.length) return false;
+  if (files.length > 1 && !input.multiple) return false;
+  const tokens = (input.accept || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+  if (!tokens.length) return true;
+  return files.every(({ file }) => tokens.some((t) =>
+    t.startsWith('.') ? file.name.toLowerCase().endsWith(t)
+      : t.endsWith('/*') ? (file.type || '').startsWith(t.slice(0, -1))
+        : file.type === t));
+}
+
+/** Which op gets dropped files: the running one if it takes them, else the first in the registry that does. */
+export function pickOp(ops, files, currentId) {
+  const cur = ops.find((o) => o.id === currentId);
+  if (cur && acceptsFiles(cur.input, files)) return cur;
+  return ops.find((o) => acceptsFiles(o.input, files)) || null;
 }
 
 // ---------------------------------------------------------------- output

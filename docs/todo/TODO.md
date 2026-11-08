@@ -17,8 +17,11 @@
 
 ## Shell / ops
 - [ ] Decide the CSP for ops that use WebAssembly (`script-src 'wasm-unsafe-eval'`, and either inline the `.wasm` as a module or allow `connect-src 'self'`).
-- [ ] Optional: `<link rel="modulepreload">` an op's files when the user hovers over its tab.
+- [ ] Optional: `<link rel="modulepreload">` an op's files when Tab completion settles on its command.
+
+## New ops
+- [ ] Archive / compression / encoding commands (gzip, base64, tar, uuencode, … up to rar/7z), in tiers by difficulty. See [new-ops.md](new-ops.md).
 
 ## Later
-- [ ] Tab grouping: when the tab bar fills up (roughly 8–10 ops, when it starts wrapping), group the ops. This can be done as ops are added, or as part of a redesign phase. See [tab-grouping.md](tab-grouping.md).
+- [ ] Command line follow-ups: grouped `help`, `help <cmd>`, arguments, per-op aliases. See [commands.md](commands.md).
 - [ ] Other local media operations (image resize/convert, etc.) using the same static, no-upload approach.

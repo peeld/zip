@@ -54,16 +54,28 @@ export function table(columns) {
  *   const t = task(); root.append(t.el);
  *   t.status('Working…'); t.progress(done, total); t.progress(null); t.fail(err);
  */
+const BAR_WIDTH = 30;
+
+/** Text progress bar: [#########.....................]  30% */
+export function textBar(fraction) {
+  const f = Math.max(0, Math.min(1, fraction || 0));
+  const n = Math.round(f * BAR_WIDTH);
+  return `[${'#'.repeat(n)}${'.'.repeat(BAR_WIDTH - n)}] ${String(Math.floor(f * 100)).padStart(3)}%`;
+}
+
 export function task() {
-  const bar = el('progress', { hidden: true });
+  const bar = el('span', { className: 'bar', role: 'progressbar', hidden: true });
+  bar.setAttribute('aria-valuemin', '0');
+  bar.setAttribute('aria-valuemax', '100');
   const msg = el('span', { role: 'status' });
   return {
     el: row(bar, msg),
     progress(done, total) {
       if (done == null) { bar.hidden = true; return; }
+      const f = total ? done / total : 0;
       bar.hidden = false;
-      bar.max = total || 1;
-      bar.value = done;
+      bar.textContent = textBar(f);
+      bar.setAttribute('aria-valuenow', String(Math.floor(Math.min(1, f) * 100)));
     },
     status(text, error = false) {
       msg.textContent = text;

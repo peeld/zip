@@ -1,7 +1,7 @@
 // Browser side of test/run_tests.py. Exercises lib/zip.js, core helpers and every op, then POSTs results.
 import { createZip, readZip, entryBlob, peekEntry } from '../public/lib/zip.js';
 import { decodeText, hexDump, viewer } from '../public/core/viewer.js';
-import { safePath } from '../public/core/files.js';
+import { safePath, acceptsFiles, pickOp } from '../public/core/files.js';
 import { OPS } from '../public/ops/registry.js';
 
 const log = [];
@@ -129,6 +129,20 @@ async function run() {
     check(v.el.hidden, 'viewer: close');
   }
 
+  // 7a. Routing dropped files to an op.
+  {
+    const f = (name, type = '') => ({ path: name, file: new File(['x'], name, { type }) });
+    const zipF = f('a.ZIP'), jpg = f('p.jpg', 'image/jpeg');
+    check(acceptsFiles({ accept: '.zip' }, [zipF]) && !acceptsFiles({ accept: '.zip' }, [jpg]), 'acceptsFiles: extension, case-insensitive');
+    check(acceptsFiles({ accept: 'image/*' }, [jpg]) && !acceptsFiles({ accept: 'image/*' }, [zipF]), 'acceptsFiles: mime wildcard');
+    check(!acceptsFiles({ accept: '.zip' }, [zipF, zipF]) && acceptsFiles({ multiple: true }, [zipF, jpg]), 'acceptsFiles: multiple');
+    const id = (files, cur) => pickOp(OPS, files, cur)?.id;
+    check(id([zipF]) === 'unzip', 'pickOp: one zip -> unzip');
+    check(id([zipF, zipF]) === 'zip' && id([jpg]) === 'zip', 'pickOp: other files -> zip');
+    check(id([zipF], 'zip') === 'zip', 'pickOp: running op keeps files it accepts');
+    check(id([jpg], 'unzip') === 'zip', 'pickOp: running op that rejects them hands off');
+  }
+
   // 7. Every registered op loads and mounts without throwing.
   const ids = new Set();
   for (const op of OPS) {
@@ -137,8 +151,13 @@ async function run() {
     try {
       const mod = await import(`../public/ops/${op.id}/op.js`);
       const root = document.createElement('div');
-      mod.mount(root);
+      const api = mod.mount(root);
       check(root.childElementCount > 0, `op ${op.id} mounts`);
+      if (op.input) check(typeof api?.addFiles === 'function', `op ${op.id} returns addFiles`);
+      if (op.id === 'zip') {
+        api.addFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);
+        check(root.querySelectorAll('tbody tr').length === 2, 'zip: addFiles lists the files');
+      }
     } catch (e) {
       check(false, `op ${op.id} mounts: ${e.message}`);
     }

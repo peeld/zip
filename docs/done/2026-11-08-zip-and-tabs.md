@@ -10,4 +10,4 @@
   `~/snap/firefox/common` because Firefox is a snap on this machine). 72 checks
   pass, including lazy loading and validating the zips the browser writes with
   `unzip -t` and Python `zipfile`.
-- Decided to defer tab grouping until the bar fills up (see `docs/todo/tab-grouping.md`).
+- Decided to defer tab grouping until the bar fills up (see `docs/todo/tab-grouping.md`, now `docs/todo/commands.md` since tabs were replaced by commands).
