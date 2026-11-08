@@ -2,7 +2,9 @@
 import { createZip, readZip, entryBlob, peekEntry } from '../public/lib/zip.js';
 import { decodeText, hexDump, viewer } from '../public/core/viewer.js';
 import { safePath, acceptsFiles, pickOp } from '../public/core/files.js';
-import { OPS } from '../public/ops/registry.js';
+import { OPS, GROUPS } from '../public/ops/registry.js';
+import { gzip, gunzip, parseHeader, gunzipName, isGzip } from '../public/lib/gzip.js';
+import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 
 const log = [];
 let failed = 0;
@@ -10,6 +12,8 @@ const check = (ok, msg) => { log.push(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok
 
 const bytes = async (b) => new Uint8Array(await b.arrayBuffer());
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+const fx2 = async (n) => (await fetch(`/fixtures/${n}`)).blob();
 
 async function post(path, body) {
   await fetch(path, { method: 'POST', body });
@@ -129,6 +133,74 @@ async function run() {
     check(v.el.hidden, 'viewer: close');
   }
 
+  // 6b. gzip / gunzip.
+  {
+    const fx = async (n) => (await fetch(`/fixtures/${n}`)).blob();
+    const src = async (n) => bytes(await (await fetch(`/fixtures/src/${n}`)).blob());
+    const unz = async (blob) => bytes(await new Response(gunzip(blob)).blob());
+    const head = async (blob) => parseHeader(await bytes(blob.slice(0, 65536)));
+
+    const named = await fx('named.txt.gz');
+    const h = await head(named);
+    check(h.name === 'hello.txt' && h.mtime?.getTime() === 1715000000 * 1000, `parseHeader: name and mtime (${h.name})`);
+    check(same(await unz(named), await src('hello.txt')), 'gunzip: python-made .gz');
+    const plain = await fx('plain.gz');
+    check((await head(plain)).name === null && same(await unz(plain), await src('random.bin')), 'gunzip: no name in header');
+    check(gunzipName('plain.gz', await head(plain)) === 'plain' && gunzipName('x.tgz', {}) === 'x.tar'
+      && gunzipName('a.gz', { name: '../../evil' }) === 'evil' && gunzipName('README', {}) === 'README.out', 'gunzipName');
+    let multi = null;
+    try { multi = new TextDecoder().decode(await unz(await fx('multi.gz'))); } catch (e) { multi = `error: ${e.message}`; }
+    check(multi === 'part one\npart two\n', `gunzip: multi-member .gz (${JSON.stringify(multi)})`);
+    // Many members, each made by our own gzip(), plus trailing zeros (ignored, like gzip -d).
+    const parts = [];
+    for (let i = 0; i < 40; i++) parts.push(await new Response(gzip(new Blob([`member ${i}\n`.repeat(i * 50)]).stream())).blob());
+    const many = await unz(new Blob([...parts, new Uint8Array(512)]));
+    const want = Array.from({ length: 40 }, (_, i) => `member ${i}\n`.repeat(i * 50)).join('');
+    check(new TextDecoder().decode(many) === want, 'gunzip: 40 members (some empty) + trailing zeros');
+    const emptyLast = await unz(new Blob([parts[3], parts[0], new Uint8Array(100)]));
+    check(new TextDecoder().decode(emptyLast) === 'member 3\n'.repeat(150), 'gunzip: empty last member + trailing zeros');
+    const t0 = performance.now();
+    const bg = await unz(await fx('bgzf-like.gz'));
+    const ms = Math.round(performance.now() - t0);
+    check(same(bg, await bytes(await fx('bgzf-like.txt'))) && ms < 20000, `gunzip: 129 members of 64 KB (bgzip-like) in ${ms} ms`);
+    let progress = 0;
+    await unz(await fx('multi.gz')).then(() => new Response(gunzip(named, { onBytes: (n) => { progress += n; } })).blob());
+    check(progress === named.size, `gunzip: onBytes reaches the file size (${progress}/${named.size})`);
+    let threw = false;
+    try { await unz(await fx('badcrc.gz')); } catch { threw = true; }
+    check(threw, 'gunzip: bad CRC detected');
+    threw = false;
+    try { await unz(new Blob([await fx('multi.gz'), await fx('badcrc.gz')])); } catch { threw = true; }
+    check(threw, 'gunzip: bad CRC in a later member detected');
+    threw = false;
+    try { parseHeader(new TextEncoder().encode('not gzip at all')); } catch { threw = true; }
+    check(threw, 'parseHeader: rejects non-gzip');
+
+    // Our output: name + mtime in the header, round trip, and Python checks it (verify_gzip).
+    const data = await src('unicodé 名前.txt');
+    const big = new Blob(Array(50).fill(data));
+    const gz = await new Response(gzip(big.stream(), { name: 'unicodé.txt', mtime: 1715000000 * 1000 })).blob();
+    await post('/upload/written.gz', gz);
+    const gh = await head(gz);
+    check(gh.name === 'unicodé.txt' && gh.mtime?.getTime() === 1715000000 * 1000, 'gzip: writes name and mtime');
+    check(same(await unz(gz), await bytes(big)), 'gzip: round trip');
+    const noLatin = await new Response(gzip(new Blob(['x']).stream(), { name: '名前.txt' })).blob();
+    check((await head(noLatin)).name === null && isGzip(await bytes(noLatin)), 'gzip: non-Latin-1 name left out');
+    const empty = await new Response(gzip(new Blob([]).stream())).blob();
+    check((await unz(empty)).length === 0, 'gzip: empty input');
+
+    const start = await readStart(gunzip(named), 5);
+    check(new TextDecoder().decode(start.bytes) === 'hello' && !start.done, 'readStart: first bytes, not done');
+    const all = await readStart(new Blob(['abc']).stream(), 10);
+    check(all.done && all.bytes.length === 3, 'readStart: short stream is done');
+    let counted = 0;
+    await new Response(new Blob(['12345']).stream().pipeThrough(countBytes((n) => { counted += n; }))).blob();
+    check(counted === 5, 'countBytes');
+    let msg = '';
+    try { await streamToBlob(gunzip(await fx('badcrc.gz'))); } catch (e) { msg = e.message; }
+    check(msg.startsWith('corrupt or cut-off gzip data'), `streamToBlob keeps the stream's error (${msg})`);
+  }
+
   // 7a. Routing dropped files to an op.
   {
     const f = (name, type = '') => ({ path: name, file: new File(['x'], name, { type }) });
@@ -141,12 +213,15 @@ async function run() {
     check(id([zipF, zipF]) === 'zip' && id([jpg]) === 'zip', 'pickOp: other files -> zip');
     check(id([zipF], 'zip') === 'zip', 'pickOp: running op keeps files it accepts');
     check(id([jpg], 'unzip') === 'zip', 'pickOp: running op that rejects them hands off');
+    check(id([f('a.tar.gz')]) === 'gunzip' && id([f('b.tgz')]) === 'gunzip', 'pickOp: .gz/.tgz -> gunzip');
+    check(id([jpg], 'gzip') === 'gzip' && id([jpg, jpg], 'gzip') === 'zip', 'pickOp: gzip takes one file only while running');
   }
 
   // 7. Every registered op loads and mounts without throwing.
   const ids = new Set();
   for (const op of OPS) {
-    check(/^[a-z0-9-]+$/.test(op.id) && !ids.has(op.id) && op.title && op.description, `registry entry ${op.id} is valid`);
+    check(/^[a-z0-9-]+$/.test(op.id) && !ids.has(op.id) && op.title && op.description && GROUPS[op.group],
+      `registry entry ${op.id} is valid`);
     ids.add(op.id);
     try {
       const mod = await import(`../public/ops/${op.id}/op.js`);
@@ -157,6 +232,22 @@ async function run() {
       if (op.id === 'zip') {
         api.addFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);
         check(root.querySelectorAll('tbody tr').length === 2, 'zip: addFiles lists the files');
+      }
+      if (op.id === 'gunzip') {
+        const file = new File([await fx2('named.txt.gz')], 'named.txt.gz');
+        await api.addFiles([{ path: file.name, file }]);
+        const name = root.querySelector('input').value;
+        check(name === 'hello.txt' && root.textContent.includes('name hello.txt'), `gunzip op: reads the header (${name})`);
+        [...root.querySelectorAll('button')].find((b) => b.textContent === 'View').click();
+        await new Promise((r) => setTimeout(r, 500));
+        const pre = root.querySelector('.viewer pre');
+        check(pre.textContent.startsWith('hello world') && root.textContent.includes('of 11.7 KB'), 'gunzip op: View shows the output');
+        await api.addFiles([{ path: 'x.gz', file: new File(['nope'], 'x.gz') }]);
+        check(root.textContent.includes('not a gzip file') && root.querySelector('button.primary').disabled, 'gunzip op: rejects non-gzip');
+      }
+      if (op.id === 'gzip') {
+        await api.addFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }]);
+        check(root.querySelector('input').value === 'a.txt.gz' && !root.querySelector('button.primary').disabled, 'gzip op: suggests a.txt.gz');
       }
     } catch (e) {
       check(false, `op ${op.id} mounts: ${e.message}`);

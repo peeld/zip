@@ -1,10 +1,11 @@
 // App shell: a drop zone and a command prompt, always at the top of the page.
 // Typing an op's id ("zip", "unzip") runs it; its output appears below.
+// `help` lists ops by registry group; `help <group>` and `help <cmd>` narrow it.
 // An op's code is loaded only the first time it runs.
 // Files dropped anywhere (or chosen) go to the running op if it accepts them,
 // otherwise to the first op in the registry that does (see pickOp).
 // The URL hash names the running op (#zip, #unzip), so ops can be linked.
-import { OPS } from './ops/registry.js';
+import { OPS, GROUPS } from './ops/registry.js';
 import { chooseFiles, filesFromDrop, pickOp } from './core/files.js';
 
 const out = document.getElementById('out');
@@ -45,20 +46,51 @@ function setCurrent(id) {
   if (location.hash.slice(1) !== (id || '')) history.replaceState(null, '', url);
 }
 
-function help() {
+const cmdLink = (id) => el('button', { type: 'button', className: 'cmd', textContent: id, onclick: () => run(id) });
+
+/** `help`: all commands under group headings. `help <group>`: one group. `help <cmd>`: one command. */
+function help(arg = '') {
+  arg = arg.toLowerCase();
+  const op = OPS.find((o) => o.id === (ALIASES[arg] || arg));
+  if (op) return helpCmd(op);
+  const builtin = BUILTINS.find((b) => b.id === (ALIASES[arg] || arg));
+  if (builtin) return el('div', { className: 'help' }, line(`${builtin.id}: ${builtin.description}`));
+  const groups = Object.keys(GROUPS).filter((g) => !arg || g === arg || GROUPS[g] === arg);
+  if (arg && !groups.length) {
+    return line(`help: no command or group '${arg}'. groups: ${Object.keys(GROUPS).join(', ')}`, 'error');
+  }
+
   const w = Math.max(...names().map((n) => n.length)) + 2;
-  const item = ({ id, description }) => el('div', {},
-    '  ',
-    el('button', { type: 'button', className: 'cmd', textContent: id, onclick: () => run(id) }),
-    ' '.repeat(w - id.length) + description);
+  const item = ({ id, description }) => el('div', {}, '  ', cmdLink(id), ' '.repeat(w - id.length) + description);
+  const lines = [];
+  for (const g of groups) lines.push(line(`${GROUPS[g]}:`), ...OPS.filter((o) => o.group === g).map(item), line(' '));
+  if (arg) return el('div', { className: 'help' }, ...lines);
+  const other = OPS.filter((o) => !GROUPS[o.group]);
+  if (other.length) lines.push(line('other:'), ...other.map(item), line(' '));
   return el('div', { className: 'help' },
-    line('commands:'),
-    ...OPS.map(item),
-    line(' '),
+    ...lines,
+    line('shell:'),
     ...BUILTINS.map(item),
     line(' '),
+    line('help <command> or help <group> for more.', 'muted'),
     line('drop files on the page to open them with the right command.', 'muted'),
     line('keys: tab completes, up/down recalls history', 'muted'));
+}
+
+/** What a file-type `accept` list looks like to a person: ".zip, .gz" (mime types dropped). */
+const takes = ({ accept = '', multiple, folders } = {}) => {
+  const exts = accept.split(',').map((t) => t.trim()).filter((t) => t.startsWith('.'));
+  const what = exts.length ? exts.join(' ') : multiple ? 'any files' : 'any file';
+  return `${what}${multiple && exts.length ? ' (several)' : ''}${folders ? ', folders' : ''}`;
+};
+
+function helpCmd(op) {
+  return el('div', { className: 'help' },
+    el('div', {}, cmdLink(op.id), ` - ${op.title}`),
+    line(`  ${op.description}`),
+    ...(op.input ? [line(`  takes: ${takes(op.input)}`)] : []),
+    line(`  group: ${GROUPS[op.group] || 'other'}`),
+    line(`  link:  #${op.id}`, 'muted'));
 }
 
 /** Show an op, loading its code on first use. Resolves to its API, or null if it failed to load. */
@@ -94,7 +126,7 @@ function run(cmd) {
   if (!cmd) return;
   if (past[past.length - 1] !== cmd) past.push(cmd);
   histPos = past.length;
-  let [name] = cmd.split(/\s+/);
+  let [name, ...args] = cmd.split(/\s+/);
   name = name.toLowerCase();
   name = ALIASES[name] || name;
 
@@ -102,7 +134,7 @@ function run(cmd) {
   if (op) return runOp(op, cmd);
   setCurrent(null);
   if (name === 'clear') screen(null);
-  else if (name === 'help') screen(cmd, help());
+  else if (name === 'help') screen(cmd, help(args[0]));
   else screen(cmd, line(`${name}: command not found. type 'help' for a list.`, 'error'));
 }
 

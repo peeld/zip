@@ -14,9 +14,18 @@
 // To add an op: create ops/<id>/op.js exporting mount(root), then add a line here.
 // See docs/ref/adding-an-op.md.
 
+// `group` is the heading the op is listed under in `help` (GROUPS gives the
+// heading order); `help <group>` lists just that group.
+export const GROUPS = { archive: 'archives', compress: 'compression' };
+
 export const OPS = [
-  { id: 'unzip', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
+  { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
     input: { accept: '.zip,application/zip' } },
-  { id: 'zip', title: 'Create a zip', description: 'Pack files and folders into a zip archive.',
+  { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
+    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip' } },
+  { id: 'zip', group: 'archive', title: 'Create a zip', description: 'Pack files and folders into a zip archive.',
     input: { multiple: true, folders: true } },
+  // Takes any single file, but only while it's the running command: zip comes first for drops.
+  { id: 'gzip', group: 'compress', title: 'Compress with gzip', description: 'Compress one file to .gz.',
+    input: {} },
 ];

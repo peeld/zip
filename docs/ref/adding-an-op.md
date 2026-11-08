@@ -14,12 +14,14 @@ public/
     files.js                      chooseFiles, filesFromDrop, acceptsFiles, pickOp, prepareSave, download,
                                   pickDirectory, writeToDirectory, makeDirs, safePath
     viewer.js                     viewer (text/hex panel), decodeText, hexDump
+    streams.js                    countBytes, readStart, streamToBlob
+    transform.js                  transformOp: the whole UI for a one-file-in, one-file-out op
   lib/                            format/processing libraries shared by several ops
     zip.js                        createZip, readZip, openEntry, peekEntry, entryBlob
+    gzip.js                       gzip, gunzip, parseHeader, gunzipName, isGzip
   ops/
-    registry.js                   list of ops (id = command name, title, description, input), in help order
-    unzip/op.js
-    zip/op.js
+    registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
+    unzip/op.js  zip/op.js  gunzip/op.js  gzip/op.js
 ```
 
 Rules:
@@ -63,26 +65,48 @@ Rules:
    }
    ```
 
-2. Add the op to `public/ops/registry.js`. The `id` is the command the user
-   types, so keep it short (`resize`, not `resize-image`). Its position in the
-   list is its position in `help`. Grouping in `help` comes later, see
-   `docs/todo/commands.md`.
+   **One file in, one file out?** (compress, decode, convert) Don't write the
+   UI: `core/transform.js` has it (file info, "Save as" name, progress,
+   optional `[ View ]` of the output). The whole op is then:
 
    ```js
-   { id: 'upper', title: 'Uppercase text', description: 'Convert a text file to upper case.',
+   import { transformOp } from '../../core/transform.js';
+   import { gzip } from '../../lib/gzip.js';
+
+   export const mount = transformOp({
+     verb: 'Compress',
+     outName: (file) => `${file.name}.gz`,
+     transform: ({ file, stream }) => gzip(stream(), { name: file.name }),
+     save: { description: 'Gzip file', mime: 'application/gzip', ext: '.gz' },
+   });
+   ```
+
+   `transform` returns a ReadableStream. `stream()` is the input, already
+   counted for the progress bar. An op that reads the file another way
+   (`Blob.slice`, like gunzip) calls `onBytes(n)` itself. `inspect(file)` can
+   read the header when the file arrives, return `{ text, size }` to show,
+   and throw to reject the file. See `ops/gunzip/op.js`.
+
+2. Add the op to `public/ops/registry.js`. The `id` is the command the user
+   types, so keep it short (`resize`, not `resize-image`). `group` must be a
+   key of `GROUPS` (add one if needed; `GROUPS` order is the heading order in
+   `help`). Within a group, list order is `help` order.
+
+   ```js
+   { id: 'upper', group: 'text', title: 'Uppercase text', description: 'Convert a text file to upper case.',
      input: { accept: '.txt,text/plain' } },
    ```
 
    `description` is shown in `help` and as the `# comment` line above the op.
-   `title` is a longer name ("Uppercase text"). The shell doesn't show it at
-   the moment, but the registry test requires it and it's kept for
-   `help <cmd>` (see `docs/todo/commands.md`).
+   `title` is a longer name ("Uppercase text"), shown by `help <cmd>`. The
+   registry test requires `title`, `description` and a known `group`.
 
    `input` (`{ accept, multiple, folders }`, `accept` in `<input accept>`
    syntax) says which files the op takes. Leave it out if the op takes no
    files. Dropped files go to the running op if it accepts them, otherwise to
    the first op in the registry that does. So list specific ops (`.zip` only)
-   before catch-alls (`zip` takes anything). `pickOp` tests in
+   before catch-alls (`zip` takes anything). An op listed after a catch-all
+   (`gzip`, `input: {}`) only gets files while it's the running command. `pickOp` tests in
    `test/zip-test.js` pin down the current routing.
 
 3. Run `python3 test/run_tests.py`. It loads and mounts every registered op
@@ -114,6 +138,10 @@ Rules:
   - **Not solved yet:** loading a `.wasm` binary with `fetch` is blocked too.
     The CSP will need adjusting the first time an op uses WebAssembly. See
     `docs/todo/TODO.md`.
+- Large files: work on streams (`Blob.stream()`, `TransformStream`) and pass
+  `out.write()` a ReadableStream, so nothing has to fit in memory. Avoid
+  `new Response(stream).blob()`: Firefox replaces the stream's error with a
+  bare AbortError. Use `streamToBlob` from `core/streams.js`.
 
 ## Saving: why `prepareSave` comes first
 

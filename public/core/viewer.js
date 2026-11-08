@@ -83,9 +83,10 @@ export function viewer() {
       bytes = data;
       text = decodeText(data);
       title.textContent = name;
-      info.textContent = total > data.length
-        ? `first ${data.length.toLocaleString()} bytes of ${fmtBytes(total)}`
-        : fmtBytes(total);
+      // total: the full size, or null if unknown (only the start was read).
+      info.textContent = total == null ? `first ${data.length.toLocaleString()} bytes`
+        : total > data.length ? `first ${data.length.toLocaleString()} bytes of ${fmtBytes(total)}`
+          : fmtBytes(total);
       info.classList.remove('error');
       textBtn.hidden = hexBtn.hidden = false;
       pre.hidden = false;

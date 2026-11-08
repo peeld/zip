@@ -2,6 +2,7 @@
 // and writing into a folder. Nothing here touches the network.
 
 import { el, isAbort } from './ui.js';
+import { streamToBlob } from './streams.js';
 
 // ---------------------------------------------------------------- input
 // Files are passed around as { path, file }: `path` is relative to whatever
@@ -94,8 +95,10 @@ export function download(blob, name) {
  * user activation, which expires during long jobs.
  *   const out = await prepareSave('archive.zip', { description: 'Zip archive', mime: 'application/zip', ext: '.zip' });
  *   …work…
- *   await out.write(blob);
- * Uses the save dialog where supported, otherwise a download.
+ *   await out.write(blob);   // a Blob or a ReadableStream
+ * Uses the save dialog where supported, otherwise a download. With the save
+ * dialog a stream goes straight to disk; a download has to collect it into a
+ * Blob first.
  * Throws an AbortError if the user cancels (check with isAbort).
  */
 export async function prepareSave(name, { description = 'File', mime = 'application/octet-stream', ext } = {}) {
@@ -105,13 +108,16 @@ export async function prepareSave(name, { description = 'File', mime = 'applicat
         suggestedName: name,
         types: ext ? [{ description, accept: { [mime]: [ext] } }] : undefined,
       });
-      return { name: handle.name, write: async (blob) => blob.stream().pipeTo(await handle.createWritable()) };
+      return {
+        name: handle.name,
+        write: async (data) => (data instanceof Blob ? data.stream() : data).pipeTo(await handle.createWritable()),
+      };
     } catch (e) {
       if (isAbort(e)) throw e;
       // Picker not allowed here (e.g. inside an iframe): fall through to download.
     }
   }
-  return { name, write: async (blob) => download(blob, name) };
+  return { name, write: async (data) => download(data instanceof Blob ? data : await streamToBlob(data), name) };
 }
 
 /**

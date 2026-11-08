@@ -1,6 +1,6 @@
 # ZipMedia
 
-File tools that run in the browser (currently: open a zip, create a zip). Files are never uploaded: all the
+File tools that run in the browser (currently: zip, unzip, gzip, gunzip). Files are never uploaded: all the
 work happens in the user's tab. The site is plain static files with no
 dependencies and no build step.
 
@@ -8,7 +8,8 @@ dependencies and no build step.
 
 The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
 list commands, then a command such as `unzip` or `zip`. Or just drop files:
-a single .zip opens in `unzip`, anything else goes to `zip`. `#unzip` in the
+a single .zip opens in `unzip`, a .gz in `gunzip`, anything else goes to
+`zip`. `help <command>` says what a command takes. `#unzip` in the
 URL runs that command on load.
 
 ## Layout
@@ -19,8 +20,8 @@ public/              deploy this folder as the web root
   app.js             command prompt; loads an op's code the first time its command runs
   style.css
   .htaccess          security headers for Apache
-  core/              shared UI and file I/O helpers (ui.js, files.js, viewer.js)
-  lib/               shared processing libraries (zip.js)
+  core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform)
+  lib/               shared processing libraries (zip.js, gzip.js)
   ops/registry.js    list of ops (id = command name), in help order
   ops/<id>/op.js     one folder per operation
 test/
@@ -62,7 +63,7 @@ and `Permissions-Policy` only work as headers, so Pages doesn't get them.
 python3 test/run_tests.py
 ```
 
-Needs `firefox`, `zip` and `unzip`. Snap Firefox works too.
+Needs `firefox`, `zip` and `unzip` (and `gzip` for one extra check). Snap Firefox works too.
 
 ## Deploy
 
@@ -80,6 +81,7 @@ Needs `firefox`, `zip` and `unzip`. Snap Firefox works too.
 | Create / open zip | yes | yes | 16.4+ |
 | Choose where to save the zip | save dialog | download | download |
 | Extract all into a folder | folder picker | one download per file | one download per file |
+| gzip / gunzip | yes | yes | 16.4+ |
 
 ## Limits of lib/zip.js
 

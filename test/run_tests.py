@@ -8,6 +8,7 @@ on localhost, loads test/zip-test.html in headless Firefox, then verifies the
 zips the browser wrote with zipfile and `unzip -t`.
 """
 import functools
+import gzip
 import http.server
 import json
 import random
@@ -74,6 +75,21 @@ def make_fixtures(work: Path) -> dict:
     raw[30 + len("hello.txt") + 5] ^= 0xFF
     (work / "corrupt.zip").write_bytes(raw)
 
+    # gzip fixtures. GzipFile stores the file name (FNAME) and mtime in the header.
+    with open(work / "named.txt.gz", "wb") as raw, gzip.GzipFile("hello.txt", "wb", fileobj=raw, mtime=1715000000) as g:
+        g.write(SOURCES["hello.txt"])
+    (work / "plain.gz").write_bytes(gzip.compress(SOURCES["random.bin"], mtime=0))  # no name in header
+    (work / "multi.gz").write_bytes(gzip.compress(b"part one\n") + gzip.compress(b"part two\n"))
+    # Like bgzip: many ~64 KB members (8 MB of text in all).
+    rng = random.Random(3)
+    words = [bytes(rng.choice(b"abcdefghij") for _ in range(rng.randint(2, 9))) for _ in range(500)]
+    text = b" ".join(rng.choice(words) for _ in range(1_400_000))[:8 << 20]
+    (work / "bgzf-like.txt").write_bytes(text)
+    (work / "bgzf-like.gz").write_bytes(b"".join(gzip.compress(text[i:i + 65280]) for i in range(0, len(text), 65280)))
+    bad = bytearray(gzip.compress(SOURCES["hello.txt"]))
+    bad[-6] ^= 0xFF  # CRC in the trailer
+    (work / "badcrc.gz").write_bytes(bad)
+
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "sources": names}))
     return {"zips": zips}
 
@@ -102,6 +118,23 @@ def verify_written(path: Path, label: str, results: list):
         else:
             check(len(z.namelist()) == 70000, f"{len(z.namelist())} entries")
             check(z.read("m/69999.txt") == b"entry 69999\n", "last entry")
+
+
+def verify_gzip(work: Path, results: list):
+    """Check the .gz the browser wrote with Python's gzip module and `gzip -t`."""
+    def check(ok, msg):
+        results.append(f"{'PASS' if ok else 'FAIL'} written.gz: {msg}")
+
+    p = work / "written.gz"
+    if not p.exists():
+        return check(False, "was not uploaded")
+    raw = p.read_bytes()
+    check(gzip.decompress(raw) == SOURCES["unicodé 名前.txt"] * 50, "python gzip decompresses it")
+    check(raw[3] & 8 and raw[10:raw.index(0, 10)] == "unicodé.txt".encode("latin-1"), "FNAME header field")
+    check(int.from_bytes(raw[4:8], "little") == 1715000000, "MTIME header field")
+    if shutil.which("gzip"):
+        r = subprocess.run(["gzip", "-t", str(p)], capture_output=True, text=True)
+        check(r.returncode == 0, f"gzip -t {r.stderr.strip()}")
 
 
 def run_firefox(url, until=None, seconds=None):
@@ -189,6 +222,8 @@ def main():
             verify_written(p, name, results)
         else:
             results.append(f"FAIL {name} was not uploaded")
+
+    verify_gzip(work, results)
 
     print("\n".join(results))
     fails = sum(r.startswith("FAIL") for r in results)

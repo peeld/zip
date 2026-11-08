@@ -1,6 +1,7 @@
 # New commands: archive and encoding formats
 
-**Status:** planning (2026-11-08). Nothing here is built yet.
+**Status:** `gzip` / `gunzip` built 2026-11-08 (see
+`docs/done/2026-11-08-gzip.md`). Next up: `base64` / `unbase64`.
 
 The site has no dependencies and no build step, and the CSP blocks WebAssembly
 for now (see TODO.md, "Shell / ops"). So the list is ordered by how much of
@@ -16,12 +17,13 @@ that we'd have to give up:
 
 ## Shared decisions (make these before the first new op)
 
-- **Encode/decode as two commands** (`base64` / `unbase64`, `gzip` / `gunzip`),
+- **Done: encode/decode as two commands** (`base64` / `unbase64`, `gzip` / `gunzip`),
   because the shell has no arguments yet (see [commands.md](commands.md)). They
   take different input too: decoders accept `.b64`, `.gz`, … and go *before*
   the encoders in the registry, so drop routing works.
-- **Registry growth:** this list goes past 10 ops, so do "groups in `help`"
-  from commands.md first, with groups `archive`, `compress` and `encode`.
+- **Done: registry groups.** `group` in the registry and `GROUPS` (heading
+  order) in `ops/registry.js`. `archive` and `compress` exist. Add `encode`
+  with base64.
 - **Routing by content, not just extension:** add an optional `sniff(bytes)`
   to the registry (magic numbers: `1f 8b` gzip, `ustar` at 257 tar,
   `Rar!` rar, `7z\xBC\xAF`, `BZh`, `\xFD7zXZ`). `pickOp` reads the first
@@ -31,10 +33,10 @@ that we'd have to give up:
   `TransformStream`s, so multi-GB files don't need to fit in memory. Write
   them as `lib/<format>.js` (no DOM) so ops can chain them (`tgz` = tar →
   gzip).
-- **Single-file ops share one UI:** drop file → status/progress → `[ Save… ]`,
-  plus `viewer` to preview text output (base64, uuencode, hex). Put that in
-  `core/` as a small helper (e.g. `transformOp({ lib, outName })`), so each
-  of these ops is ~20 lines.
+- **Done: single-file ops share one UI:** `core/transform.js`
+  `transformOp({ verb, transform, outName, inspect, preview, save })`. gzip
+  is 10 lines, gunzip 25. Output streams straight to the save dialog's file
+  (Chrome) and is only collected into a Blob for the download fallback.
 - **Archive ops share the unzip UI:** list / view / save one / extract all.
   Factor that out of `ops/unzip/op.js` into `core/` with a reader interface
   `{ entries, open(entry) → ReadableStream }`, so `untar`, `unar`, `un7z` …
@@ -44,7 +46,7 @@ that we'd have to give up:
 
 | Command | Format | Work | Notes |
 |---|---|---|---|
-| `gzip` / `gunzip` | .gz | tiny | Native `CompressionStream('gzip')`. On decode, read the FNAME header field to suggest the output name. Test concatenated multi-member .gz in all three browsers. |
+| ~~`gzip` / `gunzip`~~ | .gz | done | Native streams. gzip writes FNAME + MTIME. gunzip uses FNAME for the output name and handles multi-member files itself (the native stream rejects them, at least in Firefox). Still to check: Chrome and Safari by hand. |
 | `zlib` / `unzlib` | .zz / zlib | tiny | `CompressionStream('deflate')`. Low demand; could fold into gzip later. |
 | `tar` | .tar, .tgz | small | ustar writer: 512-byte header blocks, octal fields. PAX headers for names >100 chars and files >8 GB. Option to gzip the output (`.tar.gz`). Reuses zip's folder input. |
 | `untar` | .tar, .tar.gz, .tgz | small–med | ustar + PAX + GNU long-name (`L`) reader. A plain .tar can be indexed with `Blob.slice` like zip (random access). A .tar.gz is sequential only: index by streaming once, then "extract all" streams a second time. |
@@ -56,7 +58,7 @@ that we'd have to give up:
 | `hash` | CRC-32, SHA-1/256/384/512, MD5 | small | `crypto.subtle.digest` (whole file in memory, no streaming: fine to ~1 GB). Streaming SHA-256 and MD5 in pure JS is ~150 lines each. CRC-32 already exists in `lib/zip.js` (move to `lib/crc32.js`). |
 | `base32`, `ascii85`, `qp`, `urlenc` | text encodings | tiny each | Maybe one `encode` op with a format picker instead of four commands. |
 
-Suggested order: **gzip/gunzip → base64/unbase64 → tar/untar → uuencode/uudecode → hex → hash → ar**.
+Suggested order: ~~gzip/gunzip~~ → **base64/unbase64 → tar/untar → uuencode/uudecode → hex → hash → ar**.
 gzip and base64 prove the shared single-file UI. tar proves the shared archive UI.
 
 ## Tier 2: pure JS, a real decoder
@@ -89,6 +91,12 @@ gzip and base64 prove the shared single-file UI. tar proves the shared archive U
   mean wasm. Low value compared with gzip/zip, which are native.
 
 ## Open questions
+
+- `sniff(bytes)` routing (above) isn't built yet. A `.gz` is routed by
+  extension only. Do it with tar, since `.tar.gz` vs `.tgz` vs a `.gz` that
+  holds a tar is the first case where content matters.
+- gunzip of a `.tar.gz` gives a `.tar` to save. Once `untar` exists, should
+  gunzip offer "open with untar" instead?
 
 - Should `untar` / `unar` / `un7z` stay separate commands, or should one
   `open` (or `x`) command sniff the format and use the shared archive UI? The
