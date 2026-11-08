@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- connect-src 'none': this page cannot send data anywhere. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>ZipMedia</title>
+<meta name="description" content="Work with files in your browser: zip, unzip and more. Nothing is uploaded.">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header>
+  <h1>ZipMedia</h1>
+  <p>Work with files in your browser. Your files never leave your device.</p>
+</header>
+
+<nav id="tabs" aria-label="Tools"></nav>
+<main id="ops"><noscript>This tool needs JavaScript. It runs entirely in your browser.</noscript></main>
+
+<footer>Everything runs in this tab. Nothing is uploaded.</footer>
+</body>
+</html>
