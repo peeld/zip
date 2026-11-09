@@ -22,6 +22,9 @@ const TYPES = [
   ['tar', 'application/x-tar', 257, ascii('ustar')],
   ['deb', 'application/vnd.debian.binary-package', 0, ascii('!<arch>\ndebian-binary')],
   ['a', 'application/x-archive', 0, ascii('!<arch>\n')],
+  ['cpio', 'application/x-cpio', 0, ascii('070701')], // newc
+  ['cpio', 'application/x-cpio', 0, ascii('070702')], // newc + checksum
+  ['cpio', 'application/x-cpio', 0, ascii('070707')], // odc
   ['wasm', 'application/wasm', 0, ascii('\0asm')],
   ['mp3', 'audio/mpeg', 0, ascii('ID3')],
   ['ogg', 'audio/ogg', 0, ascii('OggS')],
@@ -69,20 +72,28 @@ const HEX = /^[0-9a-fA-F]{8}(: [0-9a-fA-F]{2}|  [0-9a-fA-F]{2} )/;
  * Content type of a file for routing: sniffType's ext ('zip', 'gz', 'png', …),
  * 'uu' for text that starts with a uuencode `begin` line, 'hex' for an
  * xxd or hexdump -C dump,
- * 'tar.gz' for a gzip whose content starts with a tar header, or null.
+ * 'tar.gz' / 'cpio.gz' for a gzip whose content starts with a tar / cpio header, or null.
  * Reads the first 512 bytes (and, for gzip, inflates the first 512 bytes inside it).
  */
 export async function sniffFile(file) {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
   const t = sniffType(head);
   if (!t) {
+    // Legacy .lzma has no magic number. Cheap pre-check (a small props byte, a
+    // dictionary size that's a multiple of 256, the range coder's leading zero),
+    // then lib/lzma.js's stricter one.
+    if (head.length >= 14 && head[0] < 225 && head[1] === 0 && head[13] === 0
+      && (await import('./lzma.js')).isLzmaAlone(head)) return 'lzma';
     const text = String.fromCharCode.apply(null, head);
     return UU.test(text) ? 'uu' : HEX.test(text) ? 'hex' : null;
   }
-  if (t.ext !== 'gz') return t.ext;
+  if (t.ext !== 'gz' && t.ext !== 'xz') return t.ext;
+  // Look inside: a .tar.gz / .cpio.xz opens as an archive.
   const inner = new Uint8Array(HEAD);
   let n = 0;
-  const reader = file.slice(0, 1 << 16).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+  const reader = (t.ext === 'gz'
+    ? file.slice(0, 1 << 16).stream().pipeThrough(new DecompressionStream('gzip'))
+    : (await import('./xz.js')).unxz(file)).getReader();
   try {
     while (n < HEAD) {
       const { value, done } = await reader.read();
@@ -96,7 +107,8 @@ export async function sniffFile(file) {
   } finally {
     reader.cancel().catch(() => {});
   }
-  return sniffType(inner.subarray(0, n))?.ext === 'tar' ? 'tar.gz' : 'gz';
+  const innerExt = sniffType(inner.subarray(0, n))?.ext;
+  return innerExt === 'tar' || innerExt === 'cpio' ? `${innerExt}.${t.ext}` : t.ext;
 }
 
 /**

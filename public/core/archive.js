@@ -11,8 +11,9 @@
 //   });
 //
 // `open(file)` resolves to a reader (throw to reject the file):
-//   entries   [{ name, size, dir, link }]: `link` (a link target) means the
-//             entry is listed but can't be saved or extracted.
+//   entries   [{ name, size, dir, link, special }]: `link` (a link target) or
+//             `special` (a word like 'fifo', 'char device') means the entry is
+//             listed but can't be saved or extracted.
 //   open(entry)        ReadableStream (or a promise of one) of the entry's data.
 //   peek(entry, n)     optional: first n bytes, if the reader can do it faster than open().
 //   each()             optional: async iterator of { entry, stream } over all
@@ -26,6 +27,9 @@ import { download, pickDirectory, makeDirs, writeToDirectory, safePath } from '.
 import { countBytes, readStart, streamToBlob } from './streams.js';
 
 const PEEK_BYTES = 1000;
+
+/** An entry that can be viewed, saved and extracted. */
+const isFile = (e) => !e.dir && !e.link && !e.special;
 
 export function archiveOp({ noun, open: openFile, sizeLabel = 'uncompressed' }) {
   return function mount(root) {
@@ -59,16 +63,19 @@ export function archiveOp({ noun, open: openFile, sizeLabel = 'uncompressed' }) 
       }
       if (id !== opened) return;
       reader = r;
-      const files = r.entries.filter((e) => !e.dir && !e.link);
+      const files = r.entries.filter(isFile);
       const links = r.entries.filter((e) => e.link);
+      const specials = r.entries.filter((e) => e.special && !e.link);
       list.setRows(r.entries.filter((e) => !e.dir).map((entry) => entry.link
         ? [`${entry.name} -> ${entry.link}`, '', el('span', { className: 'muted' }, 'link')]
+        : entry.special ? [entry.name, '', el('span', { className: 'muted' }, entry.special)]
         : [entry.name, fmtBytes(entry.size), el('span', { className: 'actions' },
           button('view', () => viewOne(entry), { link: true }),
           button('save', () => saveOne(entry), { link: true }))]));
       extractAll.disabled = files.length === 0;
       const parts = [`${files.length} files`, `${fmtBytes(files.reduce((n, e) => n + e.size, 0))} ${sizeLabel}`];
       if (links.length) parts.push(`${links.length} links (not extracted)`);
+      if (specials.length) parts.push(`${specials.length} devices/FIFOs (not extracted)`);
       t.status(`${file.name}: ${parts.join(', ')}${r.note ? `. ${r.note}` : ''}`);
     }
 
@@ -96,13 +103,13 @@ export function archiveOp({ noun, open: openFile, sizeLabel = 'uncompressed' }) 
     async function* everything(r) {
       if (r.each) { yield* r.each(); return; }
       for (const entry of r.entries) {
-        yield { entry, stream: entry.dir || entry.link ? null : await r.open(entry) };
+        yield { entry, stream: isFile(entry) ? await r.open(entry) : null };
       }
     }
 
     async function extract() {
       const r = reader;
-      const files = r.entries.filter((e) => !e.dir && !e.link);
+      const files = r.entries.filter(isFile);
       let dir;
       try {
         dir = await pickDirectory();
@@ -122,7 +129,7 @@ export function archiveOp({ noun, open: openFile, sizeLabel = 'uncompressed' }) 
       try {
         for await (const { entry, stream } of everything(r)) {
           const parts = safePath(entry.name);
-          if (!parts.length || entry.link || (!entry.dir && !stream)) { await stream?.cancel(); continue; }
+          if (!parts.length || entry.link || entry.special || (!entry.dir && !stream)) { await stream?.cancel(); continue; }
           if (entry.dir) {
             if (dir) await makeDirs(dir, parts);
             continue;

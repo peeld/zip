@@ -6,7 +6,8 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
 
 ## Shared decisions
 - **Encode and decode are two commands** (`gzip` / `gunzip`, `base64` /
-  `unbase64`, `tar` / `untar`, `ar` / `unar`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`), because ops take no arguments yet. Decoders
+  `unbase64`, `tar` / `untar`, `ar` / `unar`, `cpio` / `uncpio`, `brotli` / `unbrotli`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`), because ops take no arguments yet.
+  Decode-only formats (`unxz`) have no encoder command. Decoders
   accept specific extensions (and content types, `input.sniff`) and go
   *before* `zip` in the registry; encoders take any file and go after it
   (see [command-line.md](command-line.md), routing). An option an op needs
@@ -25,9 +26,40 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
   [clear]. The cost: the whole output is in memory until it's cleared.
 - **Untrusted content** from a file is only ever shown with `textContent`.
   Never render HTML/SVG/PDF from an archive.
-- **Native browser APIs where they exist** (`CompressionStream`), our own
-  small JS otherwise (hashes: `crypto.subtle` can't stream, see hash below). No WebAssembly yet: the CSP
-  blocks it (see `docs/todo/TODO.md`, "Shell / ops").
+- **Native browser APIs where they exist** (`CompressionStream`), then a
+  light third-party library if one fits (rules: [adding-an-op.md](adding-an-op.md),
+  "Third-party libraries"), our own small JS otherwise (hashes: `crypto.subtle` can't stream, see hash below). WebAssembly is allowed
+  for codecs that are too big to write by hand: see "WebAssembly" below.
+
+## WebAssembly (`core/wasm.js`, `tools/wasm2js.py`)
+- **CSP:** `script-src 'self' 'wasm-unsafe-eval'`. That keyword lets the page
+  compile wasm and nothing else: JS `eval` / `new Function` stay blocked, and
+  `script-src 'self'` means only our own files can supply the bytes. Wasm can
+  only call the functions our JS passes in. Set in both `index.html` (`<meta>`,
+  the only one GitHub Pages has) and `.htaccess`. Keep them the same.
+- **Loading:** `connect-src 'none'` stays, so the page still can't send data
+  anywhere, and `fetch`/`instantiateStreaming` are blocked. Each `.wasm`
+  ships as `x.wasm.js` (made by `tools/wasm2js.py`), whose default export is
+  the bytes as base64. `compileWasm(url)` imports it, decodes it
+  (`Uint8Array.fromBase64` where it exists) and compiles it once per page;
+  `loadWasm(url, imports)` instantiates it.
+  - Cost: base64 is a third bigger. GitHub Pages gzips `.js`, which wins most
+    of that back. Decoding plus compiling is a few ms per MB. The browser can't cache
+    the compiled code the way `instantiateStreaming` can.
+  - Rejected: `connect-src 'self'` (normal `.wasm` files, but it weakens the
+    "sends nothing" rule, even if only to our own origin), and importing
+    `.wasm` as an ES module (not supported widely enough yet).
+- **Web Workers:** a worker started from a URL takes its CSP from its own HTTP
+  response, not from the page's `<meta>`. On GitHub Pages that response has no
+  CSP, so a worker would be unrestricted (it could `fetch` anywhere). Before
+  putting wasm (or anything) in a worker, either serve with headers (Apache /
+  CloudFront) or keep the work on the page.
+- **Tested:** `run_tests.py` serves `/csp-check.html` with `index.html`'s own
+  `<meta>` CSP and runs `test/wasm-csp.js` in it. A hand-written `add.wasm` goes
+  through `tools/wasm2js.py` and `core/wasm.js`. Under the same policy, fetch
+  and eval must stay blocked, and wasm must be blocked once `'wasm-unsafe-eval'`
+  is removed.
+- Browsers: Chrome 97+, Firefox 102+, Safari 16+ support `'wasm-unsafe-eval'`.
 
 ## zip (`lib/zip.js`)
 Own reader/writer on native `CompressionStream('deflate-raw')`. Store and
@@ -50,6 +82,67 @@ doesn't check the CRC.
 - The trailer's size is mod 2^32, so gunzip only shows it below 4 GB.
 - Output name: the stored name (path parts removed), else `.gz` stripped,
   `.tgz` -> `.tar`, else `.out` added.
+
+## brotli (`lib/brotli.js`)
+- Native only: `CompressionStream` / `DecompressionStream('brotli')`. Firefox
+  153 has both (checked 2026-11-08; the format name is `'brotli'`, `'br'` is
+  rejected). Not checked in Chrome or Safari. Where it's missing, both ops
+  reject the file with "this browser can't (de)compress brotli". A JS
+  decoder fallback would mean the 120 KB brotli dictionary: not worth it while
+  browsers are adding the native one.
+- No quality setting: the browser's default is used.
+- brotli has no header or magic number, so `unbrotli` goes by the `.br` name
+  and decompresses the first 512 bytes when a file arrives: a non-brotli file
+  is rejected then, and the output is named from what it looks like
+  (`picture.br` holding a PNG -> `picture.png`).
+- The native decoder does report cut-off input and trailing junk.
+  `unbrotli()` replaces its bare TypeError / AbortError with "corrupt or
+  cut-off brotli data".
+
+## xz / lzma (`lib/xz.js`, `lib/lzma.js`)
+- Our own decoder, decode only. `lib/lzma.js` is the LZMA core
+  (`LzmaDecoder`: range decoder, LZMA state, dictionary), written from the
+  format as xz-embedded and the LZMA SDK describe it: `lzma2Chunks` for LZMA2
+  (xz blocks, later 7z) and `lzmaAlone` for legacy `.lzma`. `lib/xz.js` is the
+  container. Written rather than vendored: the core is ~350 lines, it can be
+  tested like the other formats, and 7z will reuse it. (Existing JS ports
+  weren't surveyed.)
+- **Container:** several streams end to end with stream padding, any number
+  of blocks, block-header sizes checked against the data, the index compared
+  with the blocks, the footer's backward size and flags checked. Junk after the
+  last stream is an error (like `xz -d`).
+- **Checks:** none, CRC32 (`lib/crc32.js`), CRC64 (`crc64()`, table-based with
+  two 32-bit halves) and SHA-256 (`lib/hash.js`), all verified. An unknown
+  check id is skipped (its size comes from the spec's table).
+- **Filters:** LZMA2 plus delta and x86 BCJ (port of xz's `simple/x86.c`).
+  ARM, ARM64, ARM-Thumb, PowerPC, IA-64, SPARC and RISC-V are refused by
+  name ("the xz ARM filter isn't supported yet").
+- **Memory:** the dictionary is the filter's size (8 MB for `xz -6`, 64 MB
+  for `-9`), capped at the block's uncompressed size when the block header
+  stores it. LZMA2 output goes out in chunks of up to 2 MB.
+- **Info without decompressing:** `xzInfo(blob)` reads the footers and indexes
+  from the end (`Blob.slice`): streams, blocks, uncompressed size, check. A
+  cut-off .xz has no footer, so `unxz`'s inspect rejects it at once.
+- **Legacy .lzma:** 13-byte header (props, dictionary size, size or -1).
+  Unknown size needs the end marker; a stored size stops there. There's no
+  magic number: `isLzmaAlone` accepts a props byte < 225, a 2^n or 3·2^n
+  dictionary, a plausible size and the range coder's leading zero byte.
+- **Speed** (headless Firefox, 3 MB of text): about 15 MB/s of output.
+  Fine for packages and source tarballs. A 1 GB image would take a minute
+  (see the TODO for a Web Worker / speed-up).
+- `.tar.xz` and `.cpio.xz` go through `lib/decompress.js`: `compression(blob)`
+  says `'gzip'` / `'xz'` / null and `decompress(blob, kind)` gives the
+  stream. `readTar` / `readCpio` return that kind as `compressed` (it was a
+  boolean; `true` still means gzip). `xz.js` is imported only when an xz is
+  actually opened. A .deb's `data.tar.xz` (dpkg-deb's default) now opens in
+  untar.
+- Output name: `.xz` / `.lzma` stripped, `.txz` / `.tlz` -> `.tar`, a name
+  with no other extension gets one from the content.
+- Tests: Python's `lzma` (liblzma) and the `xz` tool make the fixtures:
+  presets 0 / 6 / 9e, stored chunks, every check type, odd lc/lp/pb, x86
+  and delta filters, two streams with padding, 5 blocks, `.lzma` with and
+  without a size, `.tar.xz`, `.cpio.xz`, `dpkg-deb -Zxz`. Damaged copies:
+  a flipped byte, cut off, a wrong CRC64, junk after the end, an ARM filter.
 
 ## base64 (`lib/base64.js`)
 - Encoder: standard alphabet, 76-column lines plus a final newline, byte for
@@ -195,6 +288,36 @@ doesn't check the CRC.
 - Error messages: `not an ar archive`, `corrupt ar header at byte N`,
   `ar archive is cut off`, `bad long name reference at byte N`.
 
+## cpio (`lib/cpio.js`)
+- Reads newc (`070701`, hex fields, header+name and data padded to 4),
+  newc+crc (`070702`, read the same way; the checksum isn't checked), odc
+  (`070707`, octal, no padding) and old binary (16-bit words, either byte
+  order, padded to 2). `readCpio` returns `{ entries, compressed, formats,
+  trailing }`. Names lose a leading `./` or `/`; the `.` entry is dropped.
+- Ends at `TRAILER!!!`. Zero padding after it is skipped and another cpio
+  straight after it is read too, so an initramfs that is several archives end
+  to end (CPU microcode first) lists them all. Anything else after it
+  (usually the zstd/xz-compressed main archive) is counted in `trailing` and
+  shown in the status line, not read.
+- Hard links: newc (GNU cpio, the kernel) stores the data once, in the last
+  entry of the group; the others have size 0 and are listed as links to it
+  (kind `link`), like tar's hard links. odc stores the data every time, so
+  each is a plain file. Symlinks: the target is the entry's data, read into
+  `link`. Devices, FIFOs and sockets get `special` (`'fifo'`, …): listed,
+  not extracted. `core/archive.js` handles `special` for every archive op;
+  untar sets it for tar devices and FIFOs too.
+- Plain .cpio: random access (`Blob.slice`). .cpio.gz: a stream, read like a
+  .tar.gz (`openCpioEntry` decompresses up to the entry, `cpioWalk` is the
+  one pass for "Extract all"). Both use `lib/source.js`, shared with tar.
+- `createCpio`: newc like `find . | cpio -o -H newc`, parent folders first,
+  mode 644/755, uid/gid 0, the file's mtime, inode numbers counted from 1,
+  padded to 512 bytes. 4 GB per file (8 hex digits). `cpio` gzips it with
+  the checkbox (off by default), which is the form `initramfs` takes.
+- Routing: `cpio` (sniffed from the ASCII magics only: two bytes of binary
+  magic would catch random files) and `cpio.gz` both open in `uncpio`.
+- Error messages: `not a cpio archive`, `corrupt cpio header at byte N`,
+  `cpio archive is cut off`.
+
 ## hash (`lib/hash.js`, `lib/crc32.js`)
 - Pure-JS streaming CRC-32, MD5, SHA-1, SHA-256, SHA-384, SHA-512. All
   ticked algorithms are fed from one read of the file (`hashStream(stream,
@@ -223,10 +346,11 @@ doesn't check the CRC.
 
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
-webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, deb, a (ar), wasm, mp3,
+webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, deb, a (ar), cpio, wasm, mp3,
 ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
-`tar.gz` for a gzip whose first inflated bytes are a tar header, `uu`
+`tar.gz` / `cpio.gz` (or `tar.xz` / `cpio.xz`) for a gzip (or xz) whose first decompressed
+bytes are a tar / cpio header, `lzma` for a legacy .lzma header (see xz above), `uu`
 for text starting with a uuencode `begin` line, or `hex` for an xxd /
 hexdump -C dump. Used by
 unbase64 for naming and by the shell for routing.

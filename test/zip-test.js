@@ -10,14 +10,19 @@ import { uuEncode, readUu, openUuEntry } from '../public/lib/uu.js';
 import { hexEncode, hexDecode, hexFormat } from '../public/lib/hex.js';
 import { readTar, openTarEntry, tarWalk, createTar, paxRecord, tarName } from '../public/lib/tar.js';
 import { readAr, openArEntry, createAr, arNames, arName } from '../public/lib/ar.js';
+import { readCpio, openCpioEntry, cpioWalk, createCpio, cpioName, cpioFormat } from '../public/lib/cpio.js';
 import { base32Encode, base32Decode, ascii85Encode, ascii85Decode, qpEncode, qpDecode, urlEncode, urlDecode,
   ENCODINGS, detectEncoding, decodedTextName } from '../public/lib/textenc.js';
+import { brotli, unbrotli, canBrotli, canUnbrotli } from '../public/lib/brotli.js';
+import { unxz, xzInfo, crc64, unxzName, isXz, lzmaInfo } from '../public/lib/xz.js';
+import { isLzmaAlone } from '../public/lib/lzma.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
 const log = [];
 let failed = 0;
 const check = (ok, msg) => { log.push(`${ok ? 'PASS' : 'FAIL'} ${msg}`); if (!ok) failed++; };
+const skip = (msg) => log.push(`SKIP ${msg}`);
 
 const bytes = async (b) => new Uint8Array(await b.arrayBuffer());
 const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
@@ -208,6 +213,115 @@ async function run() {
     let msg = '';
     try { await streamToBlob(gunzip(await fx('badcrc.gz'))); } catch (e) { msg = e.message; }
     check(msg.startsWith('corrupt or cut-off gzip data'), `streamToBlob keeps the stream's error (${msg})`);
+  }
+
+  // 6i. brotli / unbrotli: the browser's native codec (Firefox 153+). .br fixtures from Python's brotli module.
+  {
+    const unb = async (blob) => bytes(await streamToBlob(unbrotli(blob.stream())));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    if (!canUnbrotli()) {
+      skip('brotli: this browser has no native brotli decoder');
+      const m = await err(() => unbrotli(new Blob(['x']).stream()));
+      check(m.includes("can't decompress brotli"), `unbrotli: says the browser can't do it (${m})`);
+    } else if (!manifest.brotli) {
+      skip('brotli: fixtures need the Python brotli module (pip install brotli)');
+    } else {
+      check(same(await unb(await fx2('hello.txt.br')), await bytes(await fx2('src/hello.txt'))), 'unbrotli: python-made .br');
+      check(same(await unb(await fx2('random.bin.br')), await bytes(await fx2('src/random.bin'))), 'unbrotli: incompressible data');
+      check((await unb(await fx2('empty.br'))).length === 0, 'unbrotli: empty');
+      const cut = await err(async () => unb(await fx2('cut.br')));
+      const junk = await err(async () => unb(await fx2('not.br')));
+      check(cut === 'corrupt or cut-off brotli data' && junk === cut, `unbrotli: cut-off and non-brotli data rejected (${cut} / ${junk})`);
+      // In odd-sized chunks, to cross every boundary in the native decoder's input.
+      const raw = await bytes(await fx2('hello.txt.br'));
+      const chunked = new ReadableStream({ start(c) { for (let i = 0; i < raw.length; i += 7) c.enqueue(raw.slice(i, i + 7)); c.close(); } });
+      check(same(await bytes(await streamToBlob(unbrotli(chunked))), await bytes(await fx2('src/hello.txt'))), 'unbrotli: 7-byte chunks');
+    }
+    if (canBrotli()) {
+      const text = new Blob([(await fx2('src/unicodé 名前.txt'))].concat(Array(49).fill(await fx2('src/unicodé 名前.txt'))));
+      const br = await streamToBlob(brotli(text.stream()));
+      check(br.size < text.size && (!canUnbrotli() || same(await unb(br), await bytes(text))), `brotli: compresses (${text.size} -> ${br.size}), round trip`);
+      await post('/upload/written.br', br);
+    } else {
+      skip('brotli: this browser has no native brotli encoder');
+      const m = await err(() => brotli(new Blob(['x']).stream()));
+      check(m.includes("can't compress brotli"), `brotli: says the browser can't do it (${m})`);
+    }
+  }
+
+  // 6j. xz / lzma (lib/xz.js, lib/lzma.js): Python's lzma (liblzma) and the xz tool made the fixtures.
+  {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    const c = crc64();
+    c.update(new TextEncoder().encode('123456789'));
+    check(hex([...c.digest()].reverse()) === '995dc9bbdf1939fa', 'crc64: check value of "123456789"');
+    for (const x of manifest.xzs) {
+      const blob = await fx2(x.file);
+      const t = performance.now();
+      let got, msg = '';
+      try { got = await read(unxz(blob)); } catch (e) { msg = e.message; }
+      const want = await bytes(await fx2(x.want));
+      check(got && same(got, want), `unxz: ${x.file} (${want.length} bytes, ${Math.round(performance.now() - t)} ms) ${msg}`);
+      if (x.size !== null) {
+        const info = await xzInfo(blob);
+        check(info.size === x.size, `xzInfo: ${x.file} size ${info.size}, ${info.streams} stream(s), ${info.blocks} block(s), ${info.check}`);
+      }
+    }
+    const info = async (n) => xzInfo(await fx2(n));
+    check((await info('multi.xz')).streams === 2 && (await info('check-sha256.xz')).check === 'SHA-256'
+      && (await info('check-none.xz')).check === 'no check' && (await info('empty.xz')).blocks === 0,
+      'xzInfo: streams, check names, empty file');
+    if (manifest.xzs.some((x) => x.file === 'blocks.xz')) check((await info('blocks.xz')).blocks === 5, 'xzInfo: 5 blocks (xz --block-size)');
+    const lz = await lzmaInfo(await fx2('known.lzma'));
+    check(lz.size === 100000 && (await lzmaInfo(await fx2('text.lzma'))).size === null, 'lzmaInfo: stored size, or unknown');
+    let progress = 0;
+    const tx = await fx2('text.xz');
+    await read(unxz(tx, { onBytes: (n) => { progress += n; } }));
+    check(progress === tx.size, `unxz: onBytes reaches the file size (${progress}/${tx.size})`);
+    const m = {};
+    for (const n of ['corrupt.xz', 'cut.xz', 'badcheck.xz', 'junk.xz', 'arm.xz']) m[n] = await err(async () => read(unxz(await fx2(n))));
+    check(/^corrupt|check failed/.test(m['corrupt.xz']), `unxz: a flipped byte is caught (${m['corrupt.xz']})`);
+    check(m['cut.xz'] === 'xz file is cut off', `unxz: cut off (${m['cut.xz']})`);
+    check(m['badcheck.xz'] === 'xz CRC64 check failed: the data is corrupt', `unxz: wrong CRC64 (${m['badcheck.xz']})`);
+    check(m['junk.xz'].startsWith('not xz data after the end'), `unxz: junk after the end (${m['junk.xz']})`);
+    check(m['arm.xz'] === "the xz ARM filter isn't supported yet", `unxz: unsupported filter named (${m['arm.xz']})`);
+    const cutInfo = await err(async () => xzInfo(await fx2('cut.xz')));
+    const notXz = await err(async () => read(unxz(await fx2('src/random.bin'))));
+    check(cutInfo === 'xz file is cut off' && notXz === 'not an xz or lzma file', `xzInfo: cut off; unxz: not xz (${cutInfo} / ${notXz})`);
+    const cutLzma = await err(async () => read(unxz(new Blob([(await bytes(await fx2('text.lzma'))).subarray(0, 50000)]))));
+    check(cutLzma === 'lzma file is cut off' || cutLzma.startsWith('corrupt'), `unxz: cut-off .lzma (${cutLzma})`);
+    const start = await readStart(unxz(await fx2('picture.xz')), 512);
+    check(sniffType(start.bytes)?.ext === 'png' && !start.done, 'unxz: readStart sees the PNG inside');
+    check(unxzName('a.txt.xz') === 'a.txt' && unxzName('x.txz') === 'x.tar' && unxzName('pic.xz', { ext: 'png' }) === 'pic.png'
+      && unxzName('x.tlz') === 'x.tar' && unxzName('a.lzma') === 'a' && unxzName('data') === 'data.out', 'unxzName');
+    const head = async (n) => new Uint8Array(await (await fx2(n)).slice(0, 14).arrayBuffer());
+    check(isXz(await head('text.xz')) && isLzmaAlone(await head('text.lzma')) && isLzmaAlone(await head('known.lzma'))
+      && !isLzmaAlone(await head('src/random.bin')) && !isLzmaAlone(await head('src/photo.jpg')) && !isLzmaAlone(await head('text.xz')),
+      'isXz / isLzmaAlone');
+
+    // Archives inside xz: untar / uncpio read them through lib/decompress.js.
+    const txz = await fx2('python.tar.xz');
+    const t = await readTar(txz);
+    const hello = t.entries.find((e) => e.name === 'hello.txt');
+    check(t.compressed === 'xz' && t.entries.filter((e) => e.kind === 'file').length === manifest.sources.length
+      && same(await read(openTarEntry(txz, hello, { compressed: 'xz' })), await bytes(await fx2('src/hello.txt'))),
+      'readTar: a .tar.xz (list, open one entry)');
+    let walked = 0;
+    for await (const { stream } of tarWalk(txz, { compressed: 'xz' })) if (stream) { await read(stream); walked++; }
+    check(walked === manifest.sources.length, `tarWalk: one pass over a .tar.xz (${walked})`);
+    if (manifest.cpios.length) {
+      const cxz = await fx2('newc.cpio.xz');
+      const c2 = await readCpio(cxz);
+      const h2 = c2.entries.find((e) => e.name === 'hello.txt');
+      check(c2.compressed === 'xz' && same(await read(openCpioEntry(cxz, h2, { compressed: 'xz' })), await bytes(await fx2('src/hello.txt'))),
+        'readCpio: a .cpio.xz');
+    }
+    const types = [];
+    for (const n of ['text.xz', 'python.tar.xz', 'text.lzma', 'known.lzma', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
+    if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.xz')));
+    check(types.join() === 'xz,tar.xz,lzma,lzma,' + (manifest.cpios.length ? ',cpio.xz' : ''), `sniffFile: xz, tar.xz, lzma, cpio.xz (${types.join()})`);
   }
 
   // 6c. base64 / unbase64, checked byte for byte against Python's output.
@@ -440,7 +554,7 @@ async function run() {
       const blob = await fx2(t.file);
       const { entries, compressed } = await readTar(blob);
       const files = entries.filter((e) => e.kind === 'file');
-      check(files.length === t.count && compressed === /gz$/.test(t.file),
+      check(files.length === t.count && compressed === (/gz$/.test(t.file) ? 'gzip' : null),
         `${t.file}: ${files.length} files listed (expected ${t.count}), compressed ${compressed}`);
       let ok = 0;
       for (const name of t.check) {
@@ -545,6 +659,13 @@ async function run() {
       check(names.join() === 'debian-binary,control.tar.gz,data.tar.gz' && hello
         && same(await read(openTarEntry(inner, hello, { compressed: true })), await bytes(await fx2('src/hello.txt'))),
         `pkg.deb: members ${names.join()}, data.tar.gz opens with untar`);
+      const xdeb = await fx2('pkg-xz.deb');
+      const xd = (await readAr(xdeb)).entries.find((e) => e.name === 'data.tar.xz');
+      const xinner = xd && xdeb.slice(xd.offset, xd.offset + xd.size);
+      const xtar = xinner && await readTar(xinner);
+      const xhello = xtar?.entries.find((e) => e.name.endsWith('zm-test/hello.txt'));
+      check(xtar?.compressed === 'xz' && xhello && same(await read(openTarEntry(xinner, xhello, { compressed: 'xz' })), await bytes(await fx2('src/hello.txt'))),
+        'pkg-xz.deb (dpkg-deb -Zxz): data.tar.xz opens with untar');
       // Pack the three members again: dpkg-deb must accept it (verify_ar).
       const items = [];
       for (const e of deb.entries) items.push({ name: e.name, file: new File([await read(openArEntry(deb.blob, e))], e.name) });
@@ -580,6 +701,103 @@ async function run() {
     const types = [];
     for (const n of ['gnu.a', 'bsd.a', 'pkg.deb']) if (manifest.ars.some((a) => a.file === n)) types.push(await sniffFile(await fx2(n)));
     check(types.every((t) => t === 'a' || t === 'deb') && (!manifest.ars.some((a) => a.deb) || types.includes('deb')), `sniffFile: ar (${types.join()})`);
+  }
+
+  // 6f. cpio / uncpio: GNU cpio in newc/crc/odc/bin, links, end-to-end archives; written ones checked by verify_cpio.
+  {
+    const src = async (n) => bytes(await fx2(`src/${n}`));
+    const read = async (s) => bytes(await streamToBlob(s));
+    const fail = async (p) => { try { await p; return ''; } catch (e) { return e.message; } };
+    for (const c of manifest.cpios) {
+      const blob = await fx2(c.file);
+      const { entries, compressed, formats, trailing } = await readCpio(blob);
+      const files = entries.filter((e) => e.kind === 'file');
+      check(files.length === c.files && formats.join() === c.formats.join() && compressed === (c.file.endsWith('.gz') ? 'gzip' : null)
+        && trailing === (c.trailing || 0),
+        `${c.file}: ${files.length} files (expected ${c.files}), formats ${formats}, trailing ${trailing}`);
+      let ok = 0;
+      for (const name of c.check) {
+        const e = entries.findLast((x) => x.name === name); // concat.cpio has two hello.txt: the later one wins, as on extract
+        if (e && same(await read(openCpioEntry(blob, e, { compressed })), await src(name))) ok++;
+        else check(false, `${c.file}: ${name} ${e ? 'content differs' : 'missing'}`);
+      }
+      if (c.check.length) check(ok === c.check.length, `${c.file}: ${ok} files match their source`);
+      if (c.file === 'newc.cpio') {
+        const dir = entries.find((e) => e.name === 'dir/sub');
+        const hello = entries.find((e) => e.name === 'hello.txt');
+        check(dir?.dir && hello?.mode > 0 && !entries.some((e) => e.name === '.' || e.name.startsWith('./')),
+          'newc.cpio: folders, "./" dropped, no "." entry');
+      }
+      if (c.links) {
+        const hello = entries.find((e) => e.name === 'hello.txt');
+        const hard = entries.find((e) => e.name === 'hard.txt');
+        const soft = entries.find((e) => e.name === 'soft');
+        const fifo = entries.find((e) => e.name === 'fifo');
+        const want = await src('hello.txt');
+        let linkOk;
+        if (c.formats[0] === 'newc') {
+          // The data is stored once (in the last of the two); the other is listed as a link to it.
+          const [holder, other] = hello?.kind === 'file' ? [hello, hard] : [hard, hello];
+          linkOk = holder?.kind === 'file' && other?.kind === 'link' && other.link === holder.name
+            && same(await read(openCpioEntry(blob, holder)), want);
+        } else {
+          linkOk = hello?.kind === 'file' && hard?.kind === 'file' && same(await read(openCpioEntry(blob, hard)), want);
+        }
+        check(linkOk && soft?.kind === 'symlink' && soft.link === 'hello.txt' && soft.size === 0
+          && fifo?.special === 'fifo' && fifo.size === 0, `${c.file}: hard link, symlink, FIFO`);
+      }
+    }
+    if (manifest.cpios.length) {
+      // One pass over a .cpio.gz: every file's data in order; unread streams are skipped.
+      const blob = await fx2('newc.cpio.gz');
+      const { entries } = await readCpio(blob);
+      let n = 0, good = 0;
+      for await (const { entry, stream } of cpioWalk(blob, entries, { compressed: true })) {
+        if (!stream) continue;
+        n++;
+        if (n % 2) { await stream.cancel(); continue; }
+        if (same(await read(stream), await src(entry.name))) good++;
+      }
+      check(n === manifest.sources.length && good === Math.floor(n / 2), `cpioWalk: one pass over a .cpio.gz (${good}/${Math.floor(n / 2)} read)`);
+      const links = await fx2('links-newc.cpio');
+      const lr = await readCpio(links);
+      const walked = [];
+      for await (const { entry, stream } of cpioWalk(links, lr.entries)) { walked.push(`${entry.kind}:${!!stream}`); await stream?.cancel(); }
+      check(walked.filter((w) => w === 'file:true').length === 1 && walked.includes('link:false') && walked.includes('fifo:false'),
+        `cpioWalk: only real files get a stream (${walked.join()})`);
+      check(await fail(readCpio(await fx2('corrupt.cpio'))) === 'corrupt cpio header at byte 0', 'readCpio: bad header');
+      check(await fail(readCpio(await fx2('cut.cpio'))) === 'cpio archive is cut off', 'readCpio: cut-off archive');
+    }
+    check(await fail(readCpio(new Blob(['hello '.repeat(20)]))) === 'not a cpio archive', 'readCpio: rejects non-cpio');
+    check(await fail(readCpio(new Blob([]))) === 'empty file', 'readCpio: empty file');
+    check(cpioFormat(new TextEncoder().encode('070701')) === 'newc' && cpioFormat(Uint8Array.of(0x71, 0xc7)) === 'bin-be'
+      && cpioFormat(new TextEncoder().encode('07070x')) === null, 'cpioFormat');
+
+    // Writer: every source, with folders; uploaded for GNU cpio to read.
+    const items = [];
+    for (const name of manifest.sources) {
+      items.push({ name, file: new File([await fx2(`src/${name}`)], name.split('/').pop(), { lastModified: 1715000000 * 1000 }) });
+    }
+    let progress = 0;
+    const cp = await streamToBlob(createCpio(items, { onProgress: (d) => { progress = d; } }));
+    await post('/upload/written.cpio', cp);
+    await post('/upload/written.cpio.gz', await streamToBlob(gzip(createCpio(items))));
+    const back = await readCpio(cp);
+    let rt = 0;
+    for (const it of items) {
+      const e = back.entries.find((x) => x.name === it.name);
+      if (e && same(await read(openCpioEntry(cp, e)), await bytes(it.file)) && e.mtime?.getTime() === 1715000000 * 1000) rt++;
+    }
+    const total = items.reduce((a, i) => a + i.file.size, 0);
+    check(rt === items.length && back.entries.filter((e) => e.dir).length === 2 && cp.size % 512 === 0 && progress === total,
+      `createCpio: round trip ${rt}/${items.length}, 2 folders, progress ${progress}/${total}`);
+    check(cpioName('a', true) === 'a.cpio.gz' && cpioName('a.cpio.gz', false) === 'a.cpio' && cpioName('', false) === 'archive.cpio'
+      && cpioName('x.CPIO', true) === 'x.cpio.gz', 'cpioName');
+    if (manifest.cpios.length) {
+      const types = [];
+      for (const n of ['newc.cpio', 'odc.cpio', 'newc.cpio.gz', 'bin.cpio']) types.push(await sniffFile(await fx2(n)));
+      check(types.join() === 'cpio,cpio,cpio.gz,', `sniffFile: cpio (${types.join()})`);
+    }
   }
 
   // 6h. Hashes and checksum lists (reference values from hashlib / zlib, lists from coreutils).
@@ -692,7 +910,16 @@ async function run() {
     check(id([jpg, jpg], 'tar') === 'tar', 'pickOp: tar takes files while running');
     check(id([f('x.deb')]) === 'unar' && id([f('libz.a')]) === 'unar' && by('x.dat', 'a') === 'unar' && by('x.dat', 'deb') === 'unar'
       && id([jpg, jpg], 'ar') === 'ar' && id([jpg]) === 'zip', 'pickOp: .a/.deb or ar content -> unar, ar takes files while running');
+    check(id([f('init.cpio')]) === 'uncpio' && id([f('initrd.cpio.gz')]) === 'uncpio' && by('initrd.img', 'cpio') === 'uncpio'
+      && by('initrd.img', 'cpio.gz') === 'uncpio' && by('x.cpio.gz', 'cpio.gz', 'gunzip') === 'gunzip'
+      && id([jpg, jpg], 'cpio') === 'cpio', 'pickOp: .cpio / cpio content -> uncpio, gunzip keeps a .cpio.gz while running, cpio takes files');
     check(id([jpg], 'gzip') === 'gzip' && id([jpg, jpg], 'gzip') === 'zip', 'pickOp: gzip takes one file only while running');
+    check(id([f('a.xz')]) === 'unxz' && id([f('a.lzma')]) === 'unxz' && id([f('a.tar.xz')]) === 'untar' && id([f('a.txz')]) === 'untar'
+      && by('a.dat', 'xz') === 'unxz' && by('a.dat', 'lzma') === 'unxz' && by('a.xz', 'tar.xz') === 'untar' && by('i.img', 'cpio.xz') === 'uncpio'
+      && by('a.tar.xz', 'tar.xz', 'unxz') === 'unxz' && id([f('x.tlz')]) === 'unxz',
+      'pickOp: .xz/.lzma -> unxz, .tar.xz/.txz or tar inside -> untar, cpio inside -> uncpio, unxz keeps them while running');
+    check(id([f('a.css.br')]) === 'unbrotli' && id([f('B.BR')]) === 'unbrotli' && id([jpg], 'brotli') === 'brotli' && id([jpg, jpg], 'brotli') === 'zip',
+      'pickOp: .br -> unbrotli (by name: brotli has no magic number), brotli takes one file while running');
     check(id([f('a.b64')]) === 'unbase64' && id([f('a.BASE64')]) === 'unbase64' && id([jpg], 'base64') === 'base64',
       'pickOp: .b64 -> unbase64, base64 takes any file while running');
     check(id([f('a.uu')]) === 'uudecode' && id([f('a.UUE')]) === 'uudecode' && by('mail.txt', 'uu') === 'uudecode'
@@ -758,6 +985,49 @@ async function run() {
         check(text.startsWith('hello world') && row.startsWith('hello.txt') && row.includes('11.7 KB'), 'gunzip op: makes the output, view shows it');
         await api.addFiles([{ path: 'x.gz', file: new File(['nope'], 'x.gz') }]);
         check(root.textContent.includes('not a gzip file') && root.querySelector('button.primary').disabled, 'gunzip op: rejects non-gzip');
+      }
+      if (op.id === 'unbrotli' && canUnbrotli() && manifest.brotli) {
+        const file = new File([await fx2('picture.br')], 'picture.br');
+        await api.addFiles([{ path: file.name, file }]);
+        const name = root.querySelector('input').value;
+        check(name === 'picture.png' && root.textContent.includes('looks like PNG'), `unbrotli op: names the output from the content (${name})`);
+        const h = new File([await fx2('hello.txt.br')], 'hello.txt.br');
+        await api.addFiles([{ path: h.name, file: h }]);
+        check(root.querySelector('input').value === 'hello.txt', 'unbrotli op: strips .br');
+        const { row, text } = await make(root);
+        check(text.startsWith('hello world') && row.startsWith('hello.txt') && row.includes('11.7 KB'), 'unbrotli op: makes the output, view shows it');
+        await api.addFiles([{ path: 'x.br', file: new File([await fx2('not.br')], 'x.br') }]);
+        check(root.textContent.includes('corrupt or cut-off brotli data') && root.querySelector('button.primary').disabled, 'unbrotli op: rejects non-brotli');
+      }
+      if (op.id === 'brotli' && canBrotli()) {
+        await api.addFiles([{ path: 'a.txt', file: new File(['hello'.repeat(100)], 'a.txt') }]);
+        check(root.querySelector('input').value === 'a.txt.br' && !root.querySelector('button.primary').disabled, 'brotli op: suggests a.txt.br');
+        const { row } = await make(root);
+        check(row.startsWith('a.txt.br'), `brotli op: makes the output (${row})`);
+      }
+      if (op.id === 'unxz') {
+        const file = new File([await fx2('text.xz')], 'notes.txt.xz');
+        await api.addFiles([{ path: file.name, file }]);
+        const name = root.querySelector('input').value;
+        check(name === 'notes.txt' && root.textContent.includes('xz, CRC64') && root.textContent.includes('3.0 MB uncompressed'),
+          `unxz op: reads the index (${name}; ${root.querySelector('.muted')?.textContent})`);
+        const { row, text } = await make(root);
+        check(row.startsWith('notes.txt') && text.length > 100, `unxz op: makes the output, view shows it (${row})`);
+        await api.addFiles([{ path: 'picture.xz', file: new File([await fx2('picture.xz')], 'picture.xz') }]);
+        check(root.querySelector('input').value === 'picture.png' && root.textContent.includes('looks like PNG'), 'unxz op: names the output from the content');
+        await api.addFiles([{ path: 'k.lzma', file: new File([await fx2('known.lzma')], 'k.lzma') }]);
+        check(root.textContent.includes('lzma (legacy format)') && root.textContent.includes('97.7 KB uncompressed'), 'unxz op: legacy .lzma');
+        await api.addFiles([{ path: 'cut.xz', file: new File([await fx2('cut.xz')], 'cut.xz') }]);
+        check(root.textContent.includes('xz file is cut off') && root.querySelector('button.primary').disabled, 'unxz op: rejects a cut-off file');
+        await api.addFiles([{ path: 'arm.xz', file: new File([await fx2('arm.xz')], 'arm.xz') }]);
+        check(root.textContent.includes("ARM filter isn't supported") && root.querySelector('button.primary').disabled, 'unxz op: rejects an unsupported filter');
+      }
+      if (op.id === 'untar') {
+        const file = new File([await fx2('python.tar.xz')], 'python.tar.xz');
+        await api.addFiles([{ path: file.name, file }]);
+        for (let i = 0; i < 50 && !root.querySelector('tbody tr'); i++) await sleep(100);
+        check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('xz-compressed'),
+          'untar op: lists a .tar.xz');
       }
       if (op.id === 'unbase64') {
         const file = new File([await fx2('pixel.txt')], 'pixel.txt');
@@ -833,6 +1103,28 @@ async function run() {
           'unar op: lists the members');
         await api.addFiles([{ path: 'x.a', file: new File(['nope'], 'x.a') }]);
         check(root.textContent.includes('not an ar archive') && root.querySelector('button.primary').disabled, 'unar op: rejects non-ar');
+      }
+      if (op.id === 'uncpio' && manifest.cpios.length) {
+        await api.addFiles([{ path: 'links-newc.cpio', file: new File([await fx2('links-newc.cpio')], 'links-newc.cpio') }]);
+        const text = root.textContent;
+        check(root.querySelectorAll('tbody tr').length === 4 && text.includes('links-newc.cpio: 1 files') && text.includes('2 links (not extracted)')
+          && text.includes('1 devices/FIFOs (not extracted)') && text.includes('soft -> hello.txt') && text.includes('newc'),
+          `uncpio op: lists files, links and the FIFO (${root.querySelector('.status, [role=status]')?.textContent || ''})`);
+        await api.addFiles([{ path: 'x.cpio', file: new File(['nope'], 'x.cpio') }]);
+        check(root.textContent.includes('not a cpio archive') && root.querySelector('button.primary').disabled, 'uncpio op: rejects non-cpio');
+      }
+      if (op.id === 'cpio') {
+        api.setFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);
+        const name = root.querySelector('input:not([type])');
+        const box = root.querySelector('input[type=checkbox]');
+        const first = name.value;
+        box.checked = true;
+        box.dispatchEvent(new Event('change'));
+        check(first === 'archive.cpio' && name.value === 'archive.cpio.gz', `cpio op: gzip box switches the name (${first} -> ${name.value})`);
+        box.checked = false;
+        box.dispatchEvent(new Event('change'));
+        const { row } = await make(root);
+        check(row.startsWith('archive.cpio'), `cpio op: Create cpio makes a product (${row})`);
       }
       if (op.id === 'ar') {
         api.setFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);
@@ -913,6 +1205,33 @@ async function run() {
   }
 }
 
+// WebAssembly under the real CSP: /csp-check.html carries index.html's <meta> CSP
+// (?nowasm drops 'wasm-unsafe-eval', to show the check can fail).
+async function cspCheck(query = '') {
+  const f = document.createElement('iframe');
+  const got = new Promise((res) => {
+    addEventListener('message', function h(e) {
+      if (e.source === f.contentWindow) { removeEventListener('message', h); res(e.data); }
+    });
+  });
+  f.src = `/csp-check.html${query}`;
+  document.body.append(f);
+  const r = await Promise.race([got, new Promise((res) => setTimeout(() => res({ timeout: true }), 15000))]);
+  f.remove();
+  return r;
+}
+
+async function wasmTests() {
+  const r = await cspCheck();
+  check(r.add === 5, `wasm: core/wasm.js runs a .wasm.js module under the page CSP (${JSON.stringify(r)})`);
+  check(r.fetch === 'blocked', 'wasm: the same page still blocks fetch (connect-src none)');
+  check(r.eval === 'blocked', "wasm: 'wasm-unsafe-eval' does not allow JS eval");
+  const no = await cspCheck('?nowasm');
+  check(no.add === undefined && /CSP|Content Security|wasm|eval/i.test(no.wasmError || ''),
+    `wasm: without 'wasm-unsafe-eval' the CSP blocks it (${no.wasmError})`);
+}
+
 run()
+  .then(wasmTests)
   .catch((e) => { failed++; log.push(`FAIL exception: ${e && e.stack || e}`); })
   .finally(() => post('/result', JSON.stringify({ failed, log })));

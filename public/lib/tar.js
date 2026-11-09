@@ -1,19 +1,19 @@
 // tar (ustar / pax / GNU) reader and writer. No DOM.
 //
 // Reading: a plain .tar is a Blob, read with Blob.slice (random access, so
-// listing a multi-GB tar only touches its headers). A .tar.gz can only be read
-// from the start: listing decompresses it once, and opening an entry
-// decompresses up to that entry again. tarWalk() does one pass over every
+// listing a multi-GB tar only touches its headers). A .tar.gz / .tar.xz can
+// only be read from the start (lib/decompress.js): listing decompresses it
+// once, and opening an entry decompresses up to that entry again. tarWalk() does one pass over every
 // entry, for "extract all".
 //
 // Writing: createTar() streams ustar headers + file data. Names that don't fit
 // ustar (over 100/155+100 bytes, or not ASCII) and sizes of 8 GB or more get a
 // pax extended header, like GNU `tar --format=pax` and Python's tarfile.
-import { isGzip, gunzip } from './gzip.js';
+import { compression, decompress } from './decompress.js';
+import { blobReader, streamReader, toStream } from './source.js';
 
 const BLOCK = 512;
 const RECORD = 20 * BLOCK; // GNU tar pads the archive to a 10 KB record
-const WINDOW = 1 << 16; // read-ahead for headers of a plain tar
 
 const pad = (n) => (BLOCK - (n % BLOCK)) % BLOCK;
 const ascii = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
@@ -76,85 +76,10 @@ function parsePax(b) {
 const KINDS = { 0: 'file', 7: 'file', 1: 'link', 2: 'symlink', 3: 'device', 4: 'device', 5: 'dir', 6: 'fifo' };
 const hasData = (kind) => kind === 'file' || kind === 'other';
 
-// ---------------------------------------------------------------- sources
-// The parser reads through a source: { pos, read(n), skip(n), chunks(n) }.
-
-/** A plain tar Blob: reads ahead in 64 KB windows, so small entries don't cost a slice each. */
-function blobSource(blob) {
-  let pos = 0, winStart = 0, win = new Uint8Array(0);
-  return {
-    get pos() { return pos; },
-    async read(n) {
-      if (pos < winStart || pos + n > winStart + win.length) {
-        winStart = pos;
-        win = new Uint8Array(await blob.slice(pos, pos + Math.max(n, WINDOW)).arrayBuffer());
-      }
-      const b = win.subarray(pos - winStart, pos - winStart + n);
-      pos += b.length;
-      return b;
-    },
-    async skip(n) {
-      if (pos + n > blob.size) throw cutOff();
-      pos += n;
-    },
-    async *chunks(n) {
-      const end = pos + n;
-      if (end > blob.size) throw cutOff();
-      const reader = blob.slice(pos, end).stream().getReader();
-      try {
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          pos += value.length;
-          yield value;
-        }
-      } finally {
-        reader.cancel().catch(() => {});
-      }
-    },
-    close() {},
-  };
-}
-
-/** A stream (a decompressed .tar.gz): read once, front to back. */
-function streamSource(stream) {
-  const reader = stream.getReader();
-  let buf = new Uint8Array(0);
-  let pos = 0;
-  let eof = false;
-  async function fill() {
-    if (buf.length || eof) return;
-    const { value, done } = await reader.read();
-    if (done) eof = true;
-    else buf = value;
-  }
-  async function* take(n) {
-    while (n > 0) {
-      await fill();
-      if (!buf.length) throw cutOff();
-      const c = buf.subarray(0, Math.min(n, buf.length));
-      buf = buf.subarray(c.length);
-      pos += c.length;
-      n -= c.length;
-      yield c;
-    }
-  }
-  return {
-    get pos() { return pos; },
-    async read(n) {
-      const out = new Uint8Array(n);
-      let got = 0;
-      try { for await (const c of take(n)) { out.set(c, got); got += c.length; } }
-      catch (e) { if (got === 0 && eof) return out.subarray(0, 0); throw e; }
-      return out;
-    },
-    async skip(n) { for await (const _ of take(n)); },
-    chunks: take,
-    close() { reader.cancel().catch(() => {}); },
-  };
-}
-
 const cutOff = () => new Error('tar file is cut off');
+const blobSource = (blob) => blobReader(blob, cutOff);
+const streamSource = (stream) => streamReader(stream, cutOff);
+
 
 // ---------------------------------------------------------------- reading
 
@@ -208,6 +133,7 @@ async function* walk(src) {
       mode: num(h, 100, 8),
       mtime: mtime ? new Date(mtime * 1000) : null,
       link: kind === 'link' || kind === 'symlink' ? p.linkpath ?? longLink ?? str(h, 157, 100) : null,
+      special: kind === 'device' || kind === 'fifo' ? kind : null,
       offset: src.pos, // where the data starts (in the uncompressed tar)
     };
     pax = {};
@@ -223,12 +149,12 @@ async function* walk(src) {
 export const isTar = (b) => b.length >= BLOCK && !b.subarray(0, BLOCK).every((x) => x === 0) && checksumOk(b);
 
 /**
- * List a .tar or .tar.gz Blob. Resolves to { entries, compressed }.
- * Throws if it isn't a tar (or a gzip holding one).
+ * List a .tar, .tar.gz or .tar.xz Blob. Resolves to { entries, compressed }
+ * (compressed: 'gzip', 'xz' or null). Throws if it isn't a tar (or a gzip / xz holding one).
  */
 export async function readTar(blob) {
-  const compressed = isGzip(new Uint8Array(await blob.slice(0, 3).arrayBuffer()));
-  const src = compressed ? streamSource(gunzip(blob)) : blobSource(blob);
+  const compressed = await compression(blob);
+  const src = sourceFor(blob, compressed);
   const entries = [];
   try {
     for await (const e of walk(src)) entries.push(e);
@@ -238,27 +164,17 @@ export async function readTar(blob) {
   return { entries, compressed };
 }
 
-/** Wrap an async iterator of chunks as a ReadableStream. */
-function toStream(it, onDone = () => {}) {
-  return new ReadableStream({
-    async pull(ctl) {
-      try {
-        const { value, done } = await it.next();
-        if (done) { onDone(); ctl.close(); }
-        else ctl.enqueue(value);
-      } catch (e) { onDone(); ctl.error(e); }
-    },
-    async cancel() { onDone(); await it.return?.(); },
-  });
-}
+// `compressed: true` (older callers) means gzip.
+const sourceFor = (blob, compressed) =>
+  (compressed ? streamSource(decompress(blob, compressed === true ? 'gzip' : compressed)) : blobSource(blob));
 
-/** The data of one entry (from readTar) as a stream. For a .tar.gz this decompresses up to the entry. */
-export function openTarEntry(blob, entry, { compressed = false } = {}) {
+/** The data of one entry (from readTar) as a stream. For a .tar.gz / .tar.xz this decompresses up to the entry. */
+export function openTarEntry(blob, entry, { compressed = null } = {}) {
   if (!compressed) {
     if (entry.offset + entry.size > blob.size) throw cutOff();
     return blob.slice(entry.offset, entry.offset + entry.size).stream();
   }
-  const src = streamSource(gunzip(blob));
+  const src = sourceFor(blob, compressed);
   return toStream((async function* () {
     for await (const e of walk(src)) {
       if (e.index === entry.index) { yield* src.chunks(e.size); return; }
@@ -271,8 +187,8 @@ export function openTarEntry(blob, entry, { compressed = false } = {}) {
  * Every entry in order, in one pass: yields { entry, stream }. A file's stream
  * must be read (or cancelled) before the next entry; other kinds get stream null.
  */
-export async function* tarWalk(blob, { compressed = false } = {}) {
-  const src = compressed ? streamSource(gunzip(blob)) : blobSource(blob);
+export async function* tarWalk(blob, { compressed = null } = {}) {
+  const src = sourceFor(blob, compressed);
   try {
     for await (const entry of walk(src)) {
       yield { entry, stream: entry.kind === 'file' ? toStream(src.chunks(entry.size)) : null };

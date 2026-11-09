@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- connect-src 'none': this page cannot send data anywhere. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <!-- Same as the Referrer-Policy header in .htaccess, for hosts that can't set headers (GitHub Pages). -->
 <meta name="referrer" content="no-referrer">
 <title>zip.media — zip, unzip, tar, gzip &amp; ar files in your browser</title>

@@ -24,14 +24,21 @@ export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'e
 export const OPS = [
   { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
     input: { accept: '.zip,application/zip', sniff: ['zip'] } },
-  // untar before gunzip, so a .tar.gz opens as an archive. gunzip still takes
-  // one while it's the running command.
-  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar or .tar.gz and extract them.',
-    input: { accept: '.tar,.tgz,.tar.gz,application/x-tar', sniff: ['tar', 'tar.gz'] } },
+  // untar / uncpio before gunzip / unxz, so a .tar.gz / .cpio.xz opens as an archive. gunzip / unxz
+  // still take one while they're the running command.
+  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar, .tar.gz or .tar.xz and extract them.',
+    input: { accept: '.tar,.tgz,.tar.gz,.txz,.tar.xz,application/x-tar', sniff: ['tar', 'tar.gz', 'tar.xz'] } },
   { id: 'unar', group: 'archive', title: 'Open an ar archive', description: 'View the files in an ar archive (.a library, .deb package) and extract them.',
     input: { accept: '.a,.ar,.deb,application/x-archive,application/vnd.debian.binary-package', sniff: ['a', 'deb'] } },
+  { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz or .cpio.xz (initramfs) and extract them.',
+    input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
-    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz'] } },
+    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
+  { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.',
+    input: { accept: '.xz,.lzma,.txz,.tlz,application/x-xz', sniff: ['xz', 'tar.xz', 'cpio.xz', 'lzma'] } },
+  // brotli has no magic number: by name only. Needs the browser's native decoder (lib/brotli.js).
+  { id: 'unbrotli', group: 'compress', title: 'Decompress a brotli file', description: 'Decompress a .br file.',
+    input: { accept: '.br' } },
   { id: 'unbase64', group: 'encode', title: 'Decode base64', description: 'Decode base64 text or a data: URL to a file.',
     input: { accept: '.b64,.base64' } },
   { id: 'uudecode', group: 'encode', title: 'Decode uuencoded files', description: 'Decode the uuencoded files in a text file.',
@@ -48,7 +55,11 @@ export const OPS = [
     input: { multiple: true, folders: true } },
   { id: 'ar', group: 'archive', title: 'Create an ar archive', description: 'Pack files into an ar archive (.a). ar has no folders: only file names are kept.',
     input: { multiple: true, folders: true } },
+  { id: 'cpio', group: 'archive', title: 'Create a cpio archive', description: 'Pack files and folders into a .cpio or .cpio.gz (newc format, as initramfs uses).',
+    input: { multiple: true, folders: true } },
   { id: 'gzip', group: 'compress', title: 'Compress with gzip', description: 'Compress one file to .gz.',
+    input: {} },
+  { id: 'brotli', group: 'compress', title: 'Compress with brotli', description: 'Compress one file to .br.',
     input: {} },
   { id: 'base64', group: 'encode', title: 'Encode as base64', description: 'Encode one file as base64 text.',
     input: {} },

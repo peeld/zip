@@ -14,9 +14,12 @@ import gzip
 import hashlib
 import http.server
 import io
+import os
 import json
+import lzma
 import quopri
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -114,7 +117,12 @@ def make_fixtures(work: Path) -> dict:
     tars = make_tar_fixtures(work, src)
     hashes = make_hash_fixtures(work, src)
     ars = make_ar_fixtures(work, src)
-    (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "sources": names, "long": LONG, "hashes": hashes}))
+    cpios = make_cpio_fixtures(work, src)
+    make_wasm(work)
+    has_brotli = make_brotli_fixtures(work, png)
+    xzs = make_xz_fixtures(work, src, text, png)
+    (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
+                                                    "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs}))
     return {"zips": zips}
 
 
@@ -379,6 +387,9 @@ def make_ar_fixtures(work: Path, src: Path) -> list:
         subprocess.run(["dpkg-deb", "-Zgzip", "--root-owner-group", "--build", str(pkg), str(work / "pkg.deb")],
                        check=True, capture_output=True)
         ars.append({"file": "pkg.deb", "count": 3, "deb": True, "check": {}})
+        # The usual kind: data.tar.xz (dpkg-deb's default on Debian/Ubuntu). Read by untar via lib/xz.js.
+        subprocess.run(["dpkg-deb", "-Zxz", "--root-owner-group", "--build", str(pkg), str(work / "pkg-xz.deb")],
+                       check=True, capture_output=True)
     return ars
 
 
@@ -406,6 +417,78 @@ def verify_ar(work: Path, results: list):
         i = subprocess.run(["dpkg-deb", "-f", str(p), "Package"], capture_output=True, text=True)
         check(r.returncode == 0 and "zm-test/hello.txt" in r.stdout and i.stdout.strip() == "zm-test",
               f"written.deb: dpkg-deb reads it {r.stderr.strip()} {i.stderr.strip()}")
+
+
+def make_cpio_fixtures(work: Path, src: Path) -> list:
+    """cpios from GNU cpio in each format, one with links and a FIFO, gzipped, end to end, damaged."""
+    if not shutil.which("cpio"):
+        return []
+    def cpio(fmt: str, cwd: Path) -> bytes:
+        files = subprocess.run(["find", "."], cwd=cwd, capture_output=True, check=True).stdout
+        return subprocess.run(["cpio", "-o", "-H", fmt, "--quiet"], cwd=cwd, input=files,
+                              capture_output=True, check=True).stdout
+    names = list(SOURCES)
+    cpios = []
+    for fmt, label in (("newc", "newc"), ("crc", "crc"), ("odc", "odc"), ("bin", "bin-le")):
+        (work / f"{fmt}.cpio").write_bytes(cpio(fmt, src))
+        cpios.append({"file": f"{fmt}.cpio", "files": len(names), "check": names, "formats": [label]})
+    newc = (work / "newc.cpio").read_bytes()
+    (work / "newc.cpio.gz").write_bytes(gzip.compress(newc))
+    cpios.append({"file": "newc.cpio.gz", "files": len(names), "check": names, "formats": ["newc"]})
+
+    # Hard link (data stored once in newc), symlink and FIFO.
+    links = work / "cpio-links"
+    links.mkdir()
+    (links / "hello.txt").write_bytes(SOURCES["hello.txt"])
+    (links / "hard.txt").hardlink_to(links / "hello.txt")
+    (links / "soft").symlink_to("hello.txt")
+    os.mkfifo(links / "fifo")
+    for fmt in ("newc", "odc"):
+        (work / f"links-{fmt}.cpio").write_bytes(cpio(fmt, links))
+        cpios.append({"file": f"links-{fmt}.cpio", "links": True, "formats": [fmt],
+                      "files": 1 if fmt == "newc" else 2, "check": []})
+
+    # An initramfs-style image: two archives end to end, then gzip data that isn't read.
+    (work / "concat.cpio").write_bytes((work / "links-newc.cpio").read_bytes() + (work / "odc.cpio").read_bytes())
+    cpios.append({"file": "concat.cpio", "files": 1 + len(names), "check": names, "formats": ["newc", "odc"]})
+    tail = gzip.compress(b"x" * 1000)
+    (work / "trailing.cpio").write_bytes(newc + tail)
+    cpios.append({"file": "trailing.cpio", "files": len(names), "check": names[:1], "formats": ["newc"], "trailing": len(tail)})
+
+    bad = bytearray(newc)
+    bad[10] = ord("z")  # inside the first header's inode field
+    (work / "corrupt.cpio").write_bytes(bad)
+    (work / "cut.cpio").write_bytes(newc[:5000])
+    return cpios
+
+
+def verify_cpio(work: Path, results: list):
+    """Check the cpios the browser wrote with GNU cpio (list, then extract and compare)."""
+    def check(ok, msg):
+        results.append(f"{'PASS' if ok else 'FAIL'} {msg}")
+    if not shutil.which("cpio"):
+        return
+    for name in ("written.cpio", "written.cpio.gz"):
+        p = work / name
+        if not p.exists():
+            check(False, f"{name} was not uploaded")
+            continue
+        data = p.read_bytes()
+        if name.endswith(".gz"):
+            data = gzip.decompress(data)
+        check(len(data) % 512 == 0, f"{name}: padded to 512 bytes ({len(data)})")
+        out = work / f"{name}.out"
+        out.mkdir()
+        r = subprocess.run(["cpio", "-idm", "--quiet"], cwd=out, input=data, capture_output=True)
+        good = sum((out / n).is_file() and (out / n).read_bytes() == d for n, d in SOURCES.items())
+        check(r.returncode == 0 and good == len(SOURCES),
+              f"{name}: cpio -id extracts every file ({good}/{len(SOURCES)}) {r.stderr.decode().strip()}")
+        t = subprocess.run(["cpio", "-it", "--quiet"], input=data, capture_output=True)
+        listed = t.stdout.decode().splitlines()
+        check("dir" in listed and "dir/sub" in listed and listed.index("dir") < listed.index("dir/sub/nested.csv"),
+              f"{name}: parent folders come first")
+        mt = (out / "hello.txt").stat().st_mtime if (out / "hello.txt").exists() else 0
+        check(int(mt) == 1715000000, f"{name}: mtime kept ({int(mt)})")
 
 
 def verify_written(path: Path, label: str, results: list):
@@ -451,6 +534,127 @@ def verify_gzip(work: Path, results: list):
         check(r.returncode == 0, f"gzip -t {r.stderr.strip()}")
 
 
+def make_xz_fixtures(work: Path, src: Path, text: bytes, png: bytes) -> list:
+    """.xz / .lzma from Python's lzma (liblzma) and, if installed, the xz and tar tools.
+    Each entry: { file, want (fixture with the expected output), size (from the index; null for .lzma) }."""
+    xzs = []
+    def add(name, data: bytes, want: str, raw: bytes, xz=True):
+        (work / name).write_bytes(data)
+        if not (work / want).exists():
+            (work / want).write_bytes(raw)
+        xzs.append({"file": name, "want": want, "size": len(raw) if xz else None})
+    big = text[:3 << 20]  # 3 MB: more than one 2 MB LZMA2 chunk
+    add("text.xz", lzma.compress(big), "text.txt", big)
+    add("text-e.xz", lzma.compress(big, preset=9 | lzma.PRESET_EXTREME), "text.txt", big)
+    add("text-0.xz", lzma.compress(big, preset=0), "text.txt", big)
+    add("random.bin.xz", lzma.compress(SOURCES["random.bin"]), "src/random.bin", SOURCES["random.bin"])  # stored chunks
+    add("empty.xz", lzma.compress(b""), "src/empty.txt", b"")
+    small = big[:100_000]
+    for check, label in ((lzma.CHECK_NONE, "none"), (lzma.CHECK_CRC32, "crc32"), (lzma.CHECK_SHA256, "sha256")):
+        add(f"check-{label}.xz", lzma.compress(small, check=check), "small.txt", small)
+    # lc/lp/pb other than the defaults, so the literal and position contexts are exercised.
+    add("lclppb.xz", lzma.compress(big[:500_000], filters=[{"id": lzma.FILTER_LZMA2, "lc": 1, "lp": 3, "pb": 4}]),
+        "half-mb.txt", big[:500_000])
+    # A binary-ish file (x86 code), through the x86 BCJ filter; and the delta filter on 4-byte samples.
+    code = bytes(random.Random(8).choice([0xe8, 0xe9, 0x00, 0xff, 0x48, 0x89, 0x8b, 0xc3]) for _ in range(200_000))
+    add("code.x86.xz", lzma.compress(code, filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2}]), "code.bin", code)
+    samples = b"".join(int(1000 + 800 * __import__("math").sin(i / 50)).to_bytes(4, "little") for i in range(50_000))
+    add("samples.delta.xz", lzma.compress(samples, filters=[{"id": lzma.FILTER_DELTA, "dist": 4}, {"id": lzma.FILTER_LZMA2}]),
+        "samples.bin", samples)
+    # Two streams with stream padding between them and after (like `cat a.xz b.xz` plus padding).
+    add("multi.xz", lzma.compress(b"part one\n") + b"\0" * 8 + lzma.compress(b"part two\n") + b"\0" * 4,
+        "multi.txt", b"part one\npart two\n")
+    add("picture.xz", lzma.compress(png), "png.bin", png)
+    # Legacy .lzma: size unknown + end marker (what xz --format=lzma writes), and the same with the size filled in.
+    add("text.lzma", lzma.compress(big, format=lzma.FORMAT_ALONE), "text.txt", big, xz=False)
+    known = bytearray(lzma.compress(small, format=lzma.FORMAT_ALONE))
+    known[5:13] = len(small).to_bytes(8, "little")
+    add("known.lzma", bytes(known), "small.txt", small, xz=False)
+    if shutil.which("xz"):
+        def xz(args, data: bytes) -> bytes:
+            return subprocess.run(["xz", "-c", *args], input=data, capture_output=True, check=True).stdout
+        add("blocks.xz", xz(["-T1", "--block-size=700KiB"], big), "text.txt", big)  # 5 blocks, sizes in the headers
+        add("cli-sha256.xz", xz(["--check=sha256", "-6"], big), "text.txt", big)
+        add("cli.lzma", xz(["--format=lzma"], small), "small.txt", small, xz=False)
+    # Archives inside xz, for untar / uncpio.
+    tar_xz = io.BytesIO()
+    with tarfile.open(fileobj=tar_xz, mode="w:xz") as t:
+        for n in SOURCES:
+            t.add(src / n, n)
+    (work / "python.tar.xz").write_bytes(tar_xz.getvalue())
+    if (work / "newc.cpio").exists():
+        (work / "newc.cpio.xz").write_bytes(lzma.compress((work / "newc.cpio").read_bytes()))
+    # Damaged: a flipped byte in the data, cut off, a wrong check, junk after the end, an unsupported filter.
+    good = lzma.compress(small)
+    bad = bytearray(good)
+    bad[len(bad) // 2] ^= 0x55
+    (work / "corrupt.xz").write_bytes(bad)
+    (work / "cut.xz").write_bytes(good[: len(good) // 2])
+    badcheck = bytearray(good)
+    index_size = (int.from_bytes(good[-8:-4], "little") + 1) * 4  # the footer's backward size
+    badcheck[-(12 + index_size + 8)] ^= 1  # first byte of the block's CRC64, just before the index
+    (work / "badcheck.xz").write_bytes(badcheck)
+    (work / "junk.xz").write_bytes(good + b"junk")
+    (work / "arm.xz").write_bytes(lzma.compress(small, filters=[{"id": lzma.FILTER_ARM}, {"id": lzma.FILTER_LZMA2}]))
+    return xzs
+
+
+def make_brotli_fixtures(work: Path, png: bytes) -> bool:
+    """.br files from the Python brotli module (pip install brotli). Without it the brotli tests are skipped."""
+    try:
+        import brotli
+    except ImportError:
+        return False
+    (work / "hello.txt.br").write_bytes(brotli.compress(SOURCES["hello.txt"]))
+    (work / "random.bin.br").write_bytes(brotli.compress(SOURCES["random.bin"], quality=5))
+    (work / "picture.br").write_bytes(brotli.compress(png))  # no inner extension: named from the content
+    (work / "empty.br").write_bytes(brotli.compress(b""))
+    whole = brotli.compress(SOURCES["hello.txt"] + SOURCES["random.bin"])
+    (work / "cut.br").write_bytes(whole[:len(whole) // 2])
+    (work / "not.br").write_bytes(b"hello, this is not brotli at all\n" * 4)
+    return True
+
+
+def verify_brotli(work: Path, results: list):
+    """Check the .br the browser wrote with the Python brotli module."""
+    p = work / "written.br"
+    try:
+        import brotli
+    except ImportError:
+        return
+    if not p.exists():
+        return  # the browser has no native brotli encoder: zip-test.js logged a SKIP
+    ok = brotli.decompress(p.read_bytes()) == SOURCES["unicodé 名前.txt"] * 50
+    results.append(f"{'PASS' if ok else 'FAIL'} written.br: python brotli decompresses it")
+
+
+# A hand-written module exporting add(i32, i32) -> i32, for the WebAssembly / CSP check.
+ADD_WASM = bytes.fromhex(
+    "0061736d01000000"            # magic, version 1
+    "0107016002" "7f7f017f"       # type: (i32, i32) -> i32
+    "03020100"                    # function 0 has type 0
+    "070701036164640000"          # export "add" = function 0
+    "0a09010700200020016a0b"      # code: local.get 0, local.get 1, i32.add
+)
+
+
+def make_wasm(work: Path) -> None:
+    """add.wasm -> add.wasm.js through tools/wasm2js.py, the same way ops will ship wasm."""
+    (work / "add.wasm").write_bytes(ADD_WASM)
+    subprocess.run([sys.executable, str(ROOT / "tools" / "wasm2js.py"), str(work / "add.wasm")],
+                   check=True, stdout=subprocess.DEVNULL)
+
+
+def csp_check_page(nowasm: bool) -> bytes:
+    """A page with index.html's own <meta> CSP (GitHub Pages only has that one) that runs test/wasm-csp.js."""
+    html = (ROOT / "public" / "index.html").read_text()
+    meta = re.search(r'<meta http-equiv="Content-Security-Policy"[^>]*>', html).group(0)
+    if nowasm:
+        meta = meta.replace(" 'wasm-unsafe-eval'", "")
+    return (f'<!doctype html><meta charset="utf-8">{meta}'
+            '<script type="module" src="/test/wasm-csp.js"></script>').encode()
+
+
 def run_firefox(url, until=None, seconds=None):
     """Open url in a throwaway headless Firefox until `until` is set or `seconds` pass."""
     # Snap Firefox can't see /tmp, so keep the throwaway profile in its own area.
@@ -484,6 +688,14 @@ def main():
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             requested.append(self.path.split("?")[0])
+            if self.path.split("?")[0] == "/csp-check.html":
+                body = csp_check_page("nowasm" in self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             super().do_GET()
 
         def translate_path(self, path):
@@ -540,12 +752,15 @@ def main():
     verify_gzip(work, results)
     verify_tar(work, results)
     verify_ar(work, results)
+    verify_cpio(work, results)
     verify_sums(work, results)
     verify_textenc(work, results)
+    verify_brotli(work, results)
 
     print("\n".join(results))
     fails = sum(r.startswith("FAIL") for r in results)
-    print(f"\n{len(results) - fails} passed, {fails} failed")
+    skips = sum(r.startswith("SKIP") for r in results)
+    print(f"\n{len(results) - fails - skips} passed, {fails} failed" + (f", {skips} skipped" if skips else ""))
     shutil.rmtree(work, ignore_errors=True)
     sys.exit(1 if fails else 0)
 

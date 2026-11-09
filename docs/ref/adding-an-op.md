@@ -25,18 +25,25 @@ public/
   lib/                            format/processing libraries shared by several ops
     zip.js                        createZip, readZip, openEntry, peekEntry, entryBlob
     gzip.js                       gzip, gunzip, parseHeader, gunzipName, isGzip
+    xz.js                         unxz, xzInfo, lzmaInfo, unxzName, isXz, crc64 (.xz and legacy .lzma, decode only)
+    lzma.js                       LzmaDecoder, lzma2Chunks, lzmaAlone, isLzmaAlone (the LZMA core, for xz and later 7z)
+    brotli.js                     brotli, unbrotli, canBrotli, canUnbrotli (the browser's native codec)
+    decompress.js                 compression, decompress (gzip / xz around a tar or cpio; loads xz.js on demand)
     base64.js                     base64Encode, base64Decode, parseDataUrl, unbase64Name
     uu.js                         uuEncode, readUu, openUuEntry
     hex.js                        hexEncode, hexDecode, hexFormat, unhexSize
     textenc.js                    base32/ascii85/qp/url encoders and decoders, ENCODINGS, detectEncoding, decodedTextName
     tar.js                        readTar, openTarEntry, tarWalk, createTar, tarName
     ar.js                         readAr, openArEntry, createAr, arNames, arName
+    cpio.js                       readCpio, openCpioEntry, cpioWalk, createCpio, cpioName, cpioFormat, isCpio
+    source.js                     blobReader, streamReader, toStream (byte sources for the tar/cpio parsers)
     crc32.js                      CRC_INIT, crc32Update, crc32Final (slicing-by-8)
     hash.js                       ALGOS, hasher, hashStream, formatSums, parseSums, sumsFileAlgo, parseExpected
     magic.js                      sniffType (magic numbers -> { ext, mime }), extForMime, sniffFile (routing), decodedName
+  vendor/<name>/                  third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/
     registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
-    unzip/ untar/ unar/ zip/ tar/ ar/ gunzip/ gzip/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/   one op.js each
+    unzip/ untar/ unar/ uncpio/ zip/ tar/ ar/ cpio/ gunzip/ gzip/ unxz/ unbrotli/ brotli/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/   one op.js each
 ```
 
 Rules:
@@ -110,7 +117,9 @@ Rules:
    **Opening an archive?** `core/archive.js` `archiveOp({ noun, open })` is
    the whole unzip/untar UI (list, view, save one, extract all). `open(file)`
    returns a reader: `{ entries, open(entry) → stream, peek?, each?, note? }`
-   (see the comment at the top of the file, and `ops/untar/op.js`).
+   (see the comment at the top of the file, and `ops/untar/op.js`). An entry
+   with `link` or `special` set (`'fifo'`, `'char device'`) is listed but not
+   saved or extracted.
    `sizeLabel` changes the word after the total size (`uudecode`: 'decoded').
 
    **Packing files into one archive?** `core/pack.js` `packOp` is the whole
@@ -172,13 +181,51 @@ Rules:
 - Network access is blocked by the page's CSP (`connect-src 'none'`). Ops must
   work purely locally. Any data or `.wasm` an op needs must ship as files under
   `public/` and be loaded with `import`.
-  - **Not solved yet:** loading a `.wasm` binary with `fetch` is blocked too.
-    The CSP will need adjusting the first time an op uses WebAssembly. See
-    `docs/todo/TODO.md`.
+  - **WebAssembly:** `fetch('./x.wasm')` is blocked too. Convert it with
+    `python3 tools/wasm2js.py x.wasm` (writes `x.wasm.js`, the bytes as
+    base64) and load it with
+    `loadWasm(new URL('./x.wasm.js', import.meta.url), imports)` from
+    `core/wasm.js`, inside `run` so it's only downloaded when used. Commit the
+    `.wasm` source or a note on how it was built next to the `.wasm.js`. See
+    [formats.md](formats.md), "WebAssembly".
 - Large files: work on streams (`Blob.stream()`, `TransformStream`) and pass
   `out.write()` a ReadableStream, so nothing has to fit in memory. Avoid
   `new Response(stream).blob()`: Firefox replaces the stream's error with a
   bare AbortError. Use `streamToBlob` from `core/streams.js`.
+
+## Third-party libraries
+
+The rule is "keep it light", not "write everything ourselves". A library is
+fine when it's light, powerful and brings little baggage. Prefer, in order:
+a native browser API, then a small library, then our own code. Writing our own
+is still right when it's only a few hundred lines and the format is simple
+(tar, ar, cpio, base64).
+
+A library is OK when:
+- **It's small for what it does.** Rough guide: tens of KB minified for a
+  codec. Anything around 1 MB (a big `.wasm`) needs a clear payoff, such as
+  one library replacing many formats.
+- **It has no dependencies of its own**, or very few, and none that pull in
+  a framework or Node polyfills (`Buffer`, `fs`, `process`).
+- **It ships as an ES module** (or a single file that's easy to wrap as one)
+  and runs in the browser as-is. No bundler, no build step.
+- **It works locally.** No CDN, no network calls, no telemetry. It must run
+  under the page's CSP.
+- **Its license is permissive** (MIT, BSD, Apache-2.0, zlib, ISC) or
+  otherwise compatible. Check what it bundles too (libarchive's unrar code is
+  under the unRAR license).
+- **It's maintained, or finished.** A small, stable codec that hasn't
+  changed in years is fine.
+
+How to add one:
+- Copy the file(s) into `public/vendor/<name>/`, unmodified where possible,
+  with its `LICENSE` and a `VERSION` (or a note in the file header) saying
+  the version and where it came from.
+- Wrap it in `lib/<format>.js` so ops keep the same stream interface
+  (ReadableStream of Uint8Array) and don't import the vendor code directly.
+- Load it only when needed: import it from the op's `op.js` or
+  `await import()` it on "run", never from `app.js` or `core/`.
+- Note the library and why it was picked in [formats.md](formats.md).
 
 ## Saving: why `prepareSave` comes first
 

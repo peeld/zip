@@ -31,9 +31,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      # Firefox comes preinstalled on ubuntu-latest. zip/unzip are needed for the fixtures and for `unzip -t`.
+      # Firefox comes preinstalled on ubuntu-latest. zip/unzip are needed for the fixtures and for `unzip -t`;
+      # cpio makes the cpio fixtures and checks the cpios the browser writes (those tests are skipped without it).
       - name: Install zip tools
-        run: sudo apt-get update -q && sudo apt-get install -yq zip unzip
+        run: sudo apt-get update -q && sudo apt-get install -yq zip unzip cpio
+      # Makes the .br fixtures and checks the .br the browser writes (skipped without it, and when
+      # the runner's Firefox has no native brotli).
+      - name: Install Python brotli
+        run: python3 -m pip install -q brotli
       - name: Run tests
         run: firefox --version && sha256sum --version | head -1 && python3 test/run_tests.py
 
