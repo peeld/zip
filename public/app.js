@@ -79,6 +79,11 @@ function help(arg = '') {
   const other = OPS.filter((o) => !GROUPS[o.group]);
   if (other.length) lines.push(line('other:'), ...other.map(item), line(' '));
   return el('div', { className: 'help' },
+    el('div', {}, el('a', {
+      href: 'https://github.com/peeld/zip/issues', target: '_blank', rel: 'noopener',
+      textContent: 'Log an issue or feature request',
+    })),
+    line(' '),
     ...lines,
     line('shell:'),
     ...BUILTINS.map(item),
@@ -294,6 +299,7 @@ document.getElementById('choose-files').onclick = async () => {
   openFiles(await chooseFiles({ multiple, accept }));
 };
 document.getElementById('choose-folder').onclick = async () => openFiles(await chooseFiles({ folder: true }));
+document.getElementById('motd-help').onclick = () => run('help');
 
 // The whole page is a drop target; the zone at the top lights up.
 addEventListener('dragover', (e) => {

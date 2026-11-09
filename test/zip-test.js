@@ -9,6 +9,9 @@ import { sniffType, extForMime, sniffFile, decodedName } from '../public/lib/mag
 import { uuEncode, readUu, openUuEntry } from '../public/lib/uu.js';
 import { hexEncode, hexDecode, hexFormat } from '../public/lib/hex.js';
 import { readTar, openTarEntry, tarWalk, createTar, paxRecord, tarName } from '../public/lib/tar.js';
+import { readAr, openArEntry, createAr, arNames, arName } from '../public/lib/ar.js';
+import { base32Encode, base32Decode, ascii85Encode, ascii85Decode, qpEncode, qpDecode, urlEncode, urlDecode,
+  ENCODINGS, detectEncoding, decodedTextName } from '../public/lib/textenc.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
@@ -344,6 +347,90 @@ async function run() {
       && decodedName('x.XXD', ['hex', 'xxd']) === 'x.bin', 'decodedName');
   }
 
+  // 6g. Text encodings (lib/textenc.js), against GNU basenc and Python.
+  {
+    const run = async (s) => bytes(await streamToBlob(s));
+    const fail = async (p) => { try { await p; return ''; } catch (e) { return e.message; } };
+    const txt = (t) => new Blob([t]).stream();
+    const str = async (s) => new TextDecoder().decode(await run(s));
+    const chunked = (b, n) => new ReadableStream({
+      start(c) { for (let i = 0; i < b.length; i += n) c.enqueue(b.slice(i, i + n)); c.close(); },
+    });
+    const rnd = await bytes(await fx2('src/random.bin'));
+    const fix = async (n) => bytes(await fx2(n));
+    const b32 = await fix('random.b32'), b32hex = await fix('random.b32hex');
+    check(same(await run(base32Encode(chunked(rnd, 7))), b32), 'base32: matches basenc --base32 (7-byte chunks)');
+    check(same(await run(base32Encode(chunked(rnd, 1000), { hex: true })), b32hex), 'base32hex: matches basenc --base32hex');
+    check(same(await run(base32Encode(txt(rnd.subarray(0, 1003)), { wrap: 0 })), await fix('short.w0.b32')), 'base32: wrap 0 matches base32 -w 0');
+    const vec = ['', 'f', 'fo', 'foo', 'foob', 'fooba', 'foobar'];
+    const b32v = ['', 'MY======', 'MZXQ====', 'MZXW6===', 'MZXW6YQ=', 'MZXW6YTB', 'MZXW6YTBOI======'];
+    const b32hv = ['', 'CO======', 'CPNG====', 'CPNMU===', 'CPNMUOG=', 'CPNMUOJ1', 'CPNMUOJ1E8======'];
+    let ok = true;
+    for (let i = 0; i < vec.length; i++) {
+      ok &&= await str(base32Encode(txt(vec[i]), { wrap: 0 })) === b32v[i] && await str(base32Encode(txt(vec[i]), { hex: true, wrap: 0 })) === b32hv[i];
+      ok &&= await str(base32Decode(txt(b32v[i]))) === vec[i] && await str(base32Decode(txt(b32hv[i]), { hex: true })) === vec[i];
+    }
+    check(ok, 'base32 / base32hex: RFC 4648 vectors both ways');
+    check(same(await run(base32Decode(chunked(b32, 5))), rnd) && same(await run(base32Decode(chunked(b32hex, 3), { hex: true })), rnd),
+      'unbase32: basenc output (5- and 3-byte chunks)');
+    check(await str(base32Decode(txt('mzxw6ytboi\n'))) === 'foobar' && await str(base32Decode(txt('MZXQ====MZXW6===\n'))) === 'fofoo',
+      'unbase32: lower case, no padding, concatenated padded inputs');
+    let m = await fail(run(base32Decode(txt('MZXW1'))));
+    check(m === "not base32: unexpected '1' at byte 4", `unbase32: bad character (${m})`);
+    m = await fail(run(base32Decode(txt('MZX'))));
+    check(m.includes('cut off'), `unbase32: impossible group length (${m})`);
+    m = await fail(run(base32Decode(txt('MZXQ==MZ'))));
+    check(m.includes("more '=' expected"), `unbase32: data inside the padding (${m})`);
+
+    const zeros = await fix('zeros.bin');
+    check(same(await run(ascii85Encode(chunked(rnd, 7))), await fix('random.a85')), 'ascii85: matches a85encode(wrapcol=76, adobe=True)');
+    check(same(await run(ascii85Encode(chunked(zeros, 3))), await fix('zeros.a85')), "ascii85: 'z' groups and a short last group");
+    check(await str(ascii85Encode(txt(''))) === '<~~>\n' && await str(ascii85Encode(txt('hello'))) === '<~BOu!rDZ~>\n', 'ascii85: empty, short');
+    check(same(await run(ascii85Decode(chunked(await fix('random.a85'), 5))), rnd) && same(await run(ascii85Decode(chunked(await fix('zeros.a85'), 1))), zeros)
+      && same(await run(ascii85Decode((await fx2('plain.a85')).stream())), rnd.subarray(0, 1001)), 'unascii85: Adobe, z, 1-byte chunks, no delimiters');
+    check(await str(ascii85Decode(txt(' <~ BOu!r\nDZ ~> \n'))) === 'hello' && await str(ascii85Decode(txt('y'))) === '    ',
+      "unascii85: whitespace around everything, 'y' for spaces");
+    m = await fail(run(ascii85Decode(txt('<~BOu!rDZ~>x'))));
+    check(m === "not ascii85: unexpected 'x' at byte 11 after '~>'", `unascii85: data after ~> (${m})`);
+    m = await fail(run(ascii85Decode(txt('BOu!rD{'))));
+    check(m === "not ascii85: unexpected '{' at byte 6", `unascii85: bad character (${m})`);
+    m = await fail(run(ascii85Decode(txt('s8W-"'))));
+    check(m.includes('too big'), `unascii85: group over 2^32 (${m})`);
+    m = await fail(run(ascii85Decode(txt('BOu!rD'))));
+    check(m.includes('one character'), `unascii85: one character left over (${m})`);
+
+    const qpSrc = await fix('qp-src.txt');
+    const qpOut = await run(qpEncode(chunked(rnd, 13)));
+    await post('/upload/written.qp', new Blob([qpOut]));
+    const qpText = await run(qpEncode(chunked(qpSrc, 2)));
+    await post('/upload/written-text.qp', new Blob([qpText]));
+    check(same(await run(qpDecode(chunked(qpOut, 7))), rnd) && same(await run(qpDecode(chunked(qpText, 1))), qpSrc), 'qp: our encoder round trip');
+    check(same(await run(qpDecode(chunked(await fix('random.qp'), 3))), rnd), 'unqp: binascii.b2a_qp of random bytes');
+    check(same(await run(qpDecode(chunked(await fix('text.qp'), 1))), await fix('text.qp.out')), 'unqp: same as a2b_qp on b2a_qp text (1-byte chunks)');
+    check(await str(qpEncode(txt('a = b \n\tx'))) === 'a =3D b=20\n\tx=\n' && await str(qpEncode(txt(''))) === '', 'qp: =, trailing space, soft break at the end');
+    check(await str(qpDecode(txt('a=3d=ZZ b= \t\r\nc=\nd=4'))) === 'a==ZZ bcd=4' && await str(qpDecode(txt('x='))) === 'x',
+      'unqp: lower case, junk escapes kept, soft breaks with spaces/CRLF/EOF');
+
+    check(same(await run(urlEncode(chunked(rnd, 7))), await fix('random.urlenc')), 'url: matches quote(safe="")');
+    check(same(await run(urlEncode(txt(qpSrc), { form: true })), (await fix('form.urlenc')).subarray(0, -1)), 'form: matches quote_plus');
+    check(same(await run(urlDecode(chunked(await fix('random.urlenc'), 2))), rnd) && same(await run(urlDecode(chunked(await fix('form.urlenc'), 3), { form: true })), qpSrc),
+      'unurl: quote and quote_plus output (final newline dropped)');
+    check(await str(urlDecode(txt('a%2fb+c%zz%4'))) === 'a/b+c%zz%4' && await str(urlDecode(txt('a+b\nc\r\n'), { form: true })) === 'a b\nc',
+      'unurl: + only in form, bad % kept, only trailing line breaks dropped');
+
+    for (const e of ENCODINGS) {
+      check(same(await run(e.decode(chunked(await run(e.encode(chunked(rnd, 4099))), 999))), rnd), `${e.id}: round trip`);
+    }
+    const det = async (n) => detectEncoding(new TextDecoder('latin1').decode((await fix(n)).subarray(0, 4096)));
+    check(await det('random.b32') === 'base32' && await det('random.b32hex') === 'base32hex' && await det('random.a85') === 'ascii85'
+      && await det('plain.a85') === 'ascii85' && await det('random.qp') === 'qp' && await det('text.qp') === 'qp'
+      && await det('random.urlenc') === 'url' && await det('form.urlenc') === 'form', 'detectEncoding: each fixture');
+    check(detectEncoding('hello world\n') === null && detectEncoding('') === null && detectEncoding('just some text, really.') === null
+      && detectEncoding('<html>') === null, 'detectEncoding: plain text is none of them');
+    check(decodedTextName('photo.png.b32', 'base32') === 'photo.png' && decodedTextName('mail.txt', 'qp', { ext: 'pdf' }) === 'mail.pdf'
+      && decodedTextName('x.urlenc', 'form') === 'x.bin', 'decodedTextName');
+  }
+
   // 6d. tar / untar: read what Python's tarfile and GNU tar wrote, write tars Python checks (verify_tar).
   {
     const src = async (n) => bytes(await fx2(`src/${n}`));
@@ -428,6 +515,71 @@ async function run() {
     const types = [];
     for (const n of ['pax.tar.gz', 'named.txt.gz', 'ustar.tar', 'python.zip', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
     check(types.join() === 'tar.gz,gz,tar,zip,', `sniffFile (${types.join()})`);
+  }
+
+  // 6e. ar / unar: GNU ar, BSD-style and dpkg-deb fixtures; written ar / .deb checked by verify_ar.
+  {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const fail = async (p) => { try { await p; return ''; } catch (e) { return e.message; } };
+    let deb = null;
+    for (const a of manifest.ars) {
+      const blob = await fx2(a.file);
+      const { entries, symbols, flavor } = await readAr(blob);
+      check(entries.length === a.count && (a.deb || (symbols === a.symbols && flavor === a.flavor)),
+        `${a.file}: ${entries.length} members (expected ${a.count}), ${flavor}, symbols ${symbols}`);
+      let ok = 0;
+      for (const [base, path] of Object.entries(a.check)) {
+        const e = entries.find((x) => x.name === base);
+        if (e && same(await read(openArEntry(blob, e)), await bytes(await fx2(`src/${path}`)))) ok++;
+        else check(false, `${a.file}: ${base} ${e ? 'content differs' : 'missing'}`);
+      }
+      if (!a.deb) check(ok === a.count, `${a.file}: ${ok} members match their source`);
+      if (a.deb) deb = { blob, entries };
+    }
+    if (deb) {
+      const names = deb.entries.map((e) => e.name);
+      const data = deb.entries.find((e) => e.name === 'data.tar.gz');
+      const inner = data && deb.blob.slice(data.offset, data.offset + data.size);
+      const tar = inner && await readTar(inner);
+      const hello = tar?.entries.find((e) => e.name.endsWith('zm-test/hello.txt'));
+      check(names.join() === 'debian-binary,control.tar.gz,data.tar.gz' && hello
+        && same(await read(openTarEntry(inner, hello, { compressed: true })), await bytes(await fx2('src/hello.txt'))),
+        `pkg.deb: members ${names.join()}, data.tar.gz opens with untar`);
+      // Pack the three members again: dpkg-deb must accept it (verify_ar).
+      const items = [];
+      for (const e of deb.entries) items.push({ name: e.name, file: new File([await read(openArEntry(deb.blob, e))], e.name) });
+      await post('/upload/written.deb', await streamToBlob(createAr(items)));
+    }
+    if (manifest.ars.some((a) => a.file === 'gnu.a')) {
+      check(await fail(readAr(await fx2('corrupt.a'))) === 'corrupt ar header at byte 8', 'readAr: bad header');
+      check(await fail(readAr(await fx2('cut.a'))) === 'ar archive is cut off', 'readAr: cut-off archive');
+    }
+    check(await fail(readAr(new Blob(['hello '.repeat(20)]))) === 'not an ar archive', 'readAr: rejects non-ar');
+    check((await fail(readAr(await fx2('thin.a')))).startsWith('thin ar archive'), 'readAr: rejects thin archives');
+    check((await readAr(new Blob(['!<arch>\n']))).entries.length === 0, 'readAr: empty archive');
+
+    // Writer: every source, paths dropped to their last part. Odd sizes get a "\n" pad.
+    const items = [];
+    for (const name of manifest.sources) {
+      items.push({ name, file: new File([await fx2(`src/${name}`)], name.split('/').pop(), { lastModified: 1715000000 * 1000 }) });
+    }
+    let progress = 0;
+    const ar = await streamToBlob(createAr(items, { onProgress: (d) => { progress = d; } }));
+    await post('/upload/written.a', ar);
+    const back = await readAr(ar);
+    let rt = 0;
+    for (const it of items) {
+      const e = back.entries.find((x) => x.name === it.name.split('/').pop());
+      if (e && same(await read(openArEntry(ar, e)), await bytes(it.file)) && e.mtime?.getTime() === 1715000000 * 1000) rt++;
+    }
+    const total = items.reduce((a, i) => a + i.file.size, 0);
+    check(rt === items.length && back.flavor === 'gnu' && progress === total, `createAr: round trip ${rt}/${items.length}, progress ${progress}/${total}`);
+    check((await fail((async () => arNames([{ name: 'a/x.o' }, { name: 'b/x.o' }]))())) === 'two files are named x.o: ar has no folders'
+      && arNames([{ name: 'd/e/f.o' }]).join() === 'f.o', 'arNames: last part of the path, duplicates rejected');
+    check(arName('lib') === 'lib.a' && arName('x.deb') === 'x.deb' && arName('') === 'archive.a' && arName('y.A') === 'y.A', 'arName');
+    const types = [];
+    for (const n of ['gnu.a', 'bsd.a', 'pkg.deb']) if (manifest.ars.some((a) => a.file === n)) types.push(await sniffFile(await fx2(n)));
+    check(types.every((t) => t === 'a' || t === 'deb') && (!manifest.ars.some((a) => a.deb) || types.includes('deb')), `sniffFile: ar (${types.join()})`);
   }
 
   // 6h. Hashes and checksum lists (reference values from hashlib / zlib, lists from coreutils).
@@ -538,6 +690,8 @@ async function run() {
     check(by('a.tar.gz', 'gz') === 'gunzip' && by('fake.zip', 'png') === 'zip' && by('a.tar.gz', 'tar.gz', 'gunzip') === 'gunzip'
       && by('x.b64', null) === 'unbase64', 'pickOp: content beats the name; running op keeps what it takes; name as fallback');
     check(id([jpg, jpg], 'tar') === 'tar', 'pickOp: tar takes files while running');
+    check(id([f('x.deb')]) === 'unar' && id([f('libz.a')]) === 'unar' && by('x.dat', 'a') === 'unar' && by('x.dat', 'deb') === 'unar'
+      && id([jpg, jpg], 'ar') === 'ar' && id([jpg]) === 'zip', 'pickOp: .a/.deb or ar content -> unar, ar takes files while running');
     check(id([jpg], 'gzip') === 'gzip' && id([jpg, jpg], 'gzip') === 'zip', 'pickOp: gzip takes one file only while running');
     check(id([f('a.b64')]) === 'unbase64' && id([f('a.BASE64')]) === 'unbase64' && id([jpg], 'base64') === 'base64',
       'pickOp: .b64 -> unbase64, base64 takes any file while running');
@@ -546,6 +700,9 @@ async function run() {
       'pickOp: .uu/.uue or a begin line -> uudecode, uuencode takes any file while running');
     check(id([f('a.hex')]) === 'unhex' && id([f('a.XXD')]) === 'unhex' && by('dump.txt', 'hex') === 'unhex'
       && id([jpg], 'hex') === 'hex' && id([jpg]) === 'zip', 'pickOp: .hex/.xxd or a dump -> unhex, hex takes any file while running');
+    check(id([f('a.b32')]) === 'decode' && id([f('m.QP')]) === 'decode' && id([f('x.a85')]) === 'decode' && id([f('q.urlenc')]) === 'decode'
+      && id([jpg], 'encode') === 'encode' && id([jpg, jpg], 'encode') === 'zip' && id([f('a.txt')]) === 'zip',
+      'pickOp: .b32/.a85/.qp/.urlenc -> decode, encode takes one file while running');
     check(id([jpg, zipF], 'hash') === 'hash' && id([f('SHA256SUMS'), jpg], 'hash') === 'hash' && id([f('SHA256SUMS')]) === 'zip',
       'pickOp: hash takes any files while running');
   }
@@ -669,6 +826,25 @@ async function run() {
         const { row, text } = await make(root);
         check(row.startsWith('archive.tar') && text.includes('|a.txt'), `tar op: Create tar makes a product (${row})`);
       }
+      if (op.id === 'unar') {
+        await api.addFiles([{ path: 'bsd.a', file: new File([await fx2('bsd.a')], 'bsd.a') }]);
+        check(root.querySelectorAll('tbody tr').length === manifest.sources.length
+          && root.textContent.includes(`bsd.a: ${manifest.sources.length} files`) && root.textContent.includes('BSD ar, with a symbol table'),
+          'unar op: lists the members');
+        await api.addFiles([{ path: 'x.a', file: new File(['nope'], 'x.a') }]);
+        check(root.textContent.includes('not an ar archive') && root.querySelector('button.primary').disabled, 'unar op: rejects non-ar');
+      }
+      if (op.id === 'ar') {
+        api.setFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);
+        check(root.querySelector('input:not([type])').value === 'archive.a' && !root.querySelector('input[type=checkbox]'),
+          'ar op: name archive.a, no option box');
+        const { row, text } = await make(root);
+        check(row.startsWith('archive.a') && text.startsWith('!<arch>'), `ar op: Create ar makes a product (${row})`);
+        api.setFiles([{ path: 'a/x.o', file: new File(['1'], 'x.o') }, { path: 'b/x.o', file: new File(['2'], 'x.o') }]);
+        root.querySelector('button.primary').click();
+        await sleep(300);
+        check(root.textContent.includes('ar has no folders'), 'ar op: same name twice is an error');
+      }
       if (op.id === 'hash') {
         const H = manifest.hashes;
         const sums = new File([await fx2('SHA256SUMS')], 'SHA256SUMS');
@@ -696,6 +872,36 @@ async function run() {
         for (let i = 0; i < 50 && !root.textContent.includes('Hashed'); i++) await new Promise((r) => setTimeout(r, 100));
         check(root.querySelector('tbody tr').textContent.endsWith('match') && root.textContent.includes('1 match')
           && btn('Hash').disabled && !btn('Save list…').disabled, 'hash op: pasted hash matches');
+      }
+      if (op.id === 'encode') {
+        await api.addFiles([{ path: 'a.txt', file: new File(['foobar'], 'a.txt') }]);
+        const sel = root.querySelector('select');
+        check(sel && root.querySelector('input').value === 'a.txt.b32', 'encode op: base32 first, suggests a.txt.b32');
+        sel.value = 'ascii85';
+        sel.dispatchEvent(new Event('change'));
+        await sleep(100);
+        check(root.querySelector('input').value === 'a.txt.a85', 'encode op: picking ascii85 renames to .a85');
+        const { row, text } = await make(root);
+        check(row.startsWith('a.txt.a85') && text.startsWith('<~AoDTs@<)~>'), `encode op: makes the output, view shows it (${text.slice(0, 20)})`);
+      }
+      if (op.id === 'decode') {
+        const sel = root.querySelector('select');
+        await api.addFiles([{ path: 'random.bin.b32hex', file: new File([await fx2('random.b32hex')], 'random.bin.b32hex') }]);
+        check(sel.value === 'base32hex' && root.textContent.includes('base32hex, about') && !root.querySelector('button.primary').disabled,
+          `decode op: detects base32hex (${sel.value})`);
+        await api.addFiles([{ path: 'x.qp', file: new File(['=89PNG=0D=0A=1A=0A' + 'x'.repeat(600)], 'x.qp') }]);
+        check(sel.value === 'qp' && root.querySelector('input').value === 'x.png' && root.textContent.includes('looks like PNG'),
+          `decode op: qp, names the output from the content (${root.querySelector('input').value})`);
+        sel.value = 'base32';
+        await api.addFiles([{ path: 'n.b32', file: new File(['hello, world'], 'n.b32') }]);
+        check(root.textContent.includes('not base32') && root.querySelector('button.primary').disabled, 'decode op: rejects text that is not the picked format');
+        sel.value = 'url';
+        sel.dispatchEvent(new Event('change'));
+        await sleep(100);
+        check(!root.querySelector('button.primary').disabled && root.textContent.includes('URL (%20) (format not recognised: pick one)'),
+          'decode op: picking another format re-checks the file');
+        const { text } = await make(root);
+        check(text.startsWith('hello, world'), 'decode op: decodes with the picked format');
       }
       if (op.id === 'gzip') {
         await api.addFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }]);

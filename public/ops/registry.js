@@ -28,6 +28,8 @@ export const OPS = [
   // one while it's the running command.
   { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar or .tar.gz and extract them.',
     input: { accept: '.tar,.tgz,.tar.gz,application/x-tar', sniff: ['tar', 'tar.gz'] } },
+  { id: 'unar', group: 'archive', title: 'Open an ar archive', description: 'View the files in an ar archive (.a library, .deb package) and extract them.',
+    input: { accept: '.a,.ar,.deb,application/x-archive,application/vnd.debian.binary-package', sniff: ['a', 'deb'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
     input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz'] } },
   { id: 'unbase64', group: 'encode', title: 'Decode base64', description: 'Decode base64 text or a data: URL to a file.',
@@ -36,11 +38,15 @@ export const OPS = [
     input: { accept: '.uu,.uue', sniff: ['uu'] } },
   { id: 'unhex', group: 'encode', title: 'Decode a hex dump', description: 'Turn an xxd, hexdump -C or plain hex dump back into a file.',
     input: { accept: '.hex,.xxd', sniff: ['hex'] } },
+  { id: 'decode', group: 'encode', title: 'Decode text', description: 'Decode base32, ascii85, quoted-printable or URL-encoded text to a file.',
+    input: { accept: '.b32,.base32,.a85,.ascii85,.qp,.urlenc' } },
   { id: 'zip', group: 'archive', title: 'Create a zip', description: 'Pack files and folders into a zip archive.',
     input: { multiple: true, folders: true } },
   // These take any files, but only while they're the running command: zip
   // comes first for drops.
   { id: 'tar', group: 'archive', title: 'Create a tar', description: 'Pack files and folders into a .tar or .tar.gz.',
+    input: { multiple: true, folders: true } },
+  { id: 'ar', group: 'archive', title: 'Create an ar archive', description: 'Pack files into an ar archive (.a). ar has no folders: only file names are kept.',
     input: { multiple: true, folders: true } },
   { id: 'gzip', group: 'compress', title: 'Compress with gzip', description: 'Compress one file to .gz.',
     input: {} },
@@ -49,6 +55,8 @@ export const OPS = [
   { id: 'uuencode', group: 'encode', title: 'uuencode a file', description: 'Encode one file as uuencoded text.',
     input: {} },
   { id: 'hex', group: 'encode', title: 'Hex dump a file', description: 'Write a hex dump of one file (xxd format).',
+    input: {} },
+  { id: 'encode', group: 'encode', title: 'Encode as text', description: 'Encode one file as base32, ascii85, quoted-printable or URL-encoded text.',
     input: {} },
   // Takes any files while running. A checksum list dropped with them
   // (SHA256SUMS, *.md5, *.sfv, …) is read as the list to check against.

@@ -23,13 +23,17 @@ body {
 b, strong, h2 { color: var(--hi); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-.banner {
-  margin: 0;
-  color: var(--hi);
+/* Art and byline share one font size so the byline lines up with the art's
+   baseline row when it fits beside it; flex-wrap drops it underneath when it doesn't. */
+.masthead {
+  display: flex; flex-wrap: wrap; align-items: flex-end; column-gap: 1ch;
   line-height: 1.2;
-  /* 49 columns wide: shrink to fit narrow screens. */
+  /* Art is 53 columns wide: shrink to fit narrow screens. */
   font-size: clamp(6px, calc((100vw - 2rem) / 30), 14px);
 }
+.banner { margin: 0; font-size: inherit; color: var(--hi); }
+/* Beside the art: lift one line so it sits on the baseline row, not the "|_|" tail. */
+.byline { margin: 0; padding-bottom: 1.2em; color: var(--hi); white-space: nowrap; }
 .motd { margin: .75rem 0 1rem; color: var(--dim); }
 .motd b { color: var(--fg); }
 
@@ -68,6 +72,8 @@ section[hidden], table[hidden], .viewer[hidden], .viewer pre[hidden] { display: 
 #file-view .viewer { margin: 0 0 1rem; }
 .products a.base { color: var(--hi); text-decoration: underline dotted; text-underline-offset: 3px; }
 .products a.base:hover, .products a.base:focus-visible { background: var(--fg); color: var(--bg); outline: 0; }
+.help a { color: var(--hi); text-decoration: underline dotted; text-underline-offset: 3px; }
+.help a:hover, .help a:focus-visible { background: var(--fg); color: var(--bg); outline: 0; }
 #file-view .viewer pre { max-height: 16rem; }
 
 /* Wide screens: drop zone, files and prompt on the left; command output on the right.
@@ -104,6 +110,11 @@ input:not([type=checkbox]):not(#cmd) {
 }
 input:not([type=checkbox]):not(#cmd):focus { outline: 0; border-bottom-color: var(--hi); }
 input[type=checkbox] { accent-color: var(--fg); margin: 0 .5ch 0 0; vertical-align: -1px; }
+select {
+  font: inherit; color: var(--hi); background: var(--bg);
+  border: 0; border-bottom: 1px dashed var(--dim); border-radius: 0; padding: 0 .25ch;
+}
+select:focus { outline: 0; border-bottom-color: var(--hi); }
 
 /* Text progress bar from core/ui.js task() */
 .bar { white-space: pre; color: var(--hi); }

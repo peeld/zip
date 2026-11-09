@@ -20,6 +20,8 @@ const TYPES = [
   ['rar', 'application/vnd.rar', 0, ascii('Rar!\x1a\x07')],
   ['zst', 'application/zstd', 0, [0x28, 0xb5, 0x2f, 0xfd]],
   ['tar', 'application/x-tar', 257, ascii('ustar')],
+  ['deb', 'application/vnd.debian.binary-package', 0, ascii('!<arch>\ndebian-binary')],
+  ['a', 'application/x-archive', 0, ascii('!<arch>\n')],
   ['wasm', 'application/wasm', 0, ascii('\0asm')],
   ['mp3', 'audio/mpeg', 0, ascii('ID3')],
   ['ogg', 'audio/ogg', 0, ascii('OggS')],

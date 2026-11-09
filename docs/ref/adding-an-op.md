@@ -28,13 +28,15 @@ public/
     base64.js                     base64Encode, base64Decode, parseDataUrl, unbase64Name
     uu.js                         uuEncode, readUu, openUuEntry
     hex.js                        hexEncode, hexDecode, hexFormat, unhexSize
+    textenc.js                    base32/ascii85/qp/url encoders and decoders, ENCODINGS, detectEncoding, decodedTextName
     tar.js                        readTar, openTarEntry, tarWalk, createTar, tarName
+    ar.js                         readAr, openArEntry, createAr, arNames, arName
     crc32.js                      CRC_INIT, crc32Update, crc32Final (slicing-by-8)
     hash.js                       ALGOS, hasher, hashStream, formatSums, parseSums, sumsFileAlgo, parseExpected
     magic.js                      sniffType (magic numbers -> { ext, mime }), extForMime, sniffFile (routing), decodedName
   ops/
     registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
-    unzip/ untar/ zip/ tar/ gunzip/ gzip/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ hash/   one op.js each
+    unzip/ untar/ unar/ zip/ tar/ ar/ gunzip/ gzip/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/   one op.js each
 ```
 
 Rules:
@@ -100,6 +102,11 @@ Rules:
    read the header when the file arrives, return `{ text, size }` to show,
    and throw to reject the file. See `ops/gunzip/op.js`.
 
+   **An option before arguments exist?** `transformOp({ choice: { label,
+   options: [[value, text], …] } })` adds a select; its value reaches
+   `transform`, `outName` and `inspect` as `choice`, and inspect can set it
+   when a file arrives. See `ops/decode/op.js`.
+
    **Opening an archive?** `core/archive.js` `archiveOp({ noun, open })` is
    the whole unzip/untar UI (list, view, save one, extract all). `open(file)`
    returns a reader: `{ entries, open(entry) → stream, peek?, each?, note? }`
@@ -107,7 +114,7 @@ Rules:
    `sizeLabel` changes the word after the total size (`uudecode`: 'decoded').
 
    **Packing files into one archive?** `core/pack.js` `packOp` is the whole
-   zip/tar UI (name box, one option checkbox, create, the "made" list). It
+   zip/tar/ar UI (name box, an optional checkbox, create, the "made" list). It
    packs every file in the list on the left: an op whose API has
    `setFiles(files)` is sent the whole list by the shell whenever it changes,
    instead of `addFiles`. See `ops/tar/op.js`.

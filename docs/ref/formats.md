@@ -6,18 +6,19 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
 
 ## Shared decisions
 - **Encode and decode are two commands** (`gzip` / `gunzip`, `base64` /
-  `unbase64`, `tar` / `untar`, `uuencode` / `uudecode`, `hex` / `unhex`), because ops take no arguments yet. Decoders
+  `unbase64`, `tar` / `untar`, `ar` / `unar`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`), because ops take no arguments yet. Decoders
   accept specific extensions (and content types, `input.sniff`) and go
   *before* `zip` in the registry; encoders take any file and go after it
   (see [command-line.md](command-line.md), routing). An option an op needs
-  before arguments exist is a checkbox in its panel (tar: gzip on/off).
+  before arguments exist is a checkbox in its panel (tar: gzip on/off), or a
+  select (`transformOp` `choice`; encode/decode: the format).
 - **Libraries are streams, with no DOM.** `lib/<format>.js` works on
   ReadableStreams of Uint8Array (`TransformStream`), so multi-GB files never
   have to fit in memory and ops can chain them (`tar` with gzip is
   `gzip(createTar(items))`).
 - **Ops share UIs by shape**: archive readers use `core/archive.js`
   `archiveOp` (list / view / save / extract all), packers use `core/pack.js`
-  `packOp` (name + one option; the files are the list on the left), one-file-in,
+  `packOp` (name + an optional checkbox; the files are the list on the left), one-file-in,
   one-file-out ops use `core/transform.js` `transformOp(...)`. Both collect
   their output into a Blob and list it under "made" (`core/products.js`) with
   a download link and [view] [x], so it can be looked at before saving and made again after
@@ -117,6 +118,41 @@ doesn't check the CRC.
   (`00000000: 48…`) or hexdump -C (`00000000  48 …`). Plain hex isn't
   sniffed (too easy to mistake for text); it goes by name or by running `unhex`.
 
+## Text encodings (`lib/textenc.js`)
+- One `encode` and one `decode` command with a **Format** select
+  (`transformOp` `choice`), instead of eight commands. base64, hex and
+  uuencode keep their own commands. `ENCODINGS` is the list: base32,
+  base32hex, ascii85, quoted-printable, URL (`%20`), form (`+` for space).
+- Encoders match the usual tools byte for byte (tested): base32 / base32hex
+  like GNU `basenc` (76 columns, final newline); ascii85 like Python's
+  `a85encode(wrapcol=76, adobe=True)` (`<~ ~>`, `z` for four zero bytes, the
+  delimiters count toward the 76) plus a final newline; URL like
+  `quote(safe='')` / `quote_plus` (only `A-Z a-z 0-9 - . _ ~` kept, no newline).
+- Quoted-printable is our own (Python's `b2a_qp` isn't a spec to copy): `\n`
+  stays a hard line break, everything else not printable (`\r` too), `=`,
+  and a space/tab before a line break become `=XX`, so any binary file
+  round-trips exactly. Lines are at most 76 with the soft-break `=`, an
+  escape is never split, and if the input has no final newline the output
+  ends with `=\n` (decodes to nothing). Tested by Python's `a2b_qp` and `quopri`.
+- Decoders are lenient: base32 takes lower case, whitespace, missing or
+  concatenated padding; ascii85 takes or skips `<~ ~>`, reads `z` and `y`
+  (btoa: four spaces), rejects groups over 2^32 and anything after `~>`;
+  qp keeps a `=` that isn't an escape (like Python), `=` + spaces + line
+  break (LF or CRLF) is a soft break, trailing whitespace is kept; URL keeps
+  a bad `%`, `+` is a space only in form, and line breaks at the very end
+  are dropped (an editor's final newline). Errors give the byte offset.
+- `detectEncoding` guesses from the first 4 KB when a file arrives and sets
+  the select (the user can change it, and the file is checked again):
+  `<~` -> ascii85; only `A-Z2-7=` -> base32; only `0-9A-V=` -> base32hex;
+  every `=` an escape or soft break -> qp; only URL characters and every
+  `%` an escape -> url (form if there's a `+`); 40+ characters of the
+  ascii85 range with no spaces and some punctuation -> ascii85. Plain text
+  is none of them ("format not recognised: pick one"). Not used for routing:
+  `decode` gets files by name (`.b32 .base32 .a85 .ascii85 .qp .urlenc`) or
+  while it's running.
+- Output names: encode adds the format's extension; decode strips it, else
+  uses the decoded content's type (`lib/magic.js` `decodedName`).
+
 ## tar (`lib/tar.js`)
 - Reads ustar, pax (`x`, global `g`: path, linkpath, size, mtime), GNU long
   names (`L`/`K`) and base-256 numbers. Every header's checksum is checked
@@ -135,6 +171,29 @@ doesn't check the CRC.
   split into ustar prefix 155 + name 100, isn't ASCII, or the size is 8 GB
   or more. Padded to 10 KB records like GNU tar. `tar` gzips the stream with
   `lib/gzip.js` when its box is ticked (default).
+
+## ar (`lib/ar.js`)
+- Reads every common name style: GNU/SysV (`name/`, a `//` long-name table
+  referenced as `/123`, `/` and `/SYM64/` symbol tables), BSD/macOS (`#1/N`:
+  the name is the first N bytes of the data, NUL-padded; `__.SYMDEF…`
+  tables), and plain space-padded names (old BSD, dpkg's .deb members).
+  `readAr` returns `{ entries, symbols, flavor }`. Symbol tables and other
+  `/…` members (Windows `/<ECSYMBOLS>/`) are skipped, not listed. Thin
+  archives (`!<thin>\n`) are rejected: their members are other files.
+- Random access with `Blob.slice`; headers are read ahead in 64 KB windows.
+  A stray newline or padding after the last member is tolerated.
+- `createAr`: GNU style, like `ar rc`. ar has no folders, so only the last
+  part of each path is stored (`arNames`); two files with the same name are
+  an error rather than a silently shadowed member. Names over 15 bytes go in
+  the `//` table. uid/gid 0, mode 100644, the file's mtime. No symbol table
+  (the linker wants one for object files: run `ranlib` on the result).
+  Size limit 10 GB per member (the header's 10 decimal digits).
+- .deb: an ar of `debian-binary`, `control.tar.*`, `data.tar.*`. dpkg reads
+  GNU-style names (tested with `dpkg-deb`), so `ar` can repack one if the
+  files are listed in that order. unar opens any .deb; untar opens its
+  `data.tar.gz` (xz and zstd need decoders we don't have yet).
+- Error messages: `not an ar archive`, `corrupt ar header at byte N`,
+  `ar archive is cut off`, `bad long name reference at byte N`.
 
 ## hash (`lib/hash.js`, `lib/crc32.js`)
 - Pure-JS streaming CRC-32, MD5, SHA-1, SHA-256, SHA-384, SHA-512. All
@@ -164,8 +223,8 @@ doesn't check the CRC.
 
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
-webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, wasm, mp3, ogg, flac, wav,
-mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
+webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, deb, a (ar), wasm, mp3,
+ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
 `tar.gz` for a gzip whose first inflated bytes are a tar header, `uu`
 for text starting with a uuencode `begin` line, or `hex` for an xxd /

@@ -23,7 +23,7 @@ listed once). Each row has:
   how a one-file op (gzip, base64, …) picks its input.
 - `[x]`: remove it from the list. `[clear]` removes them all.
 
-Ops that take many files (zip, tar, hash) always work on the whole list: their
+Ops that take many files (zip, tar, ar, hash) always work on the whole list: their
 API has `setFiles(files)`, which the shell calls whenever the list changes.
 They don't list the files again on the right.
 
@@ -60,15 +60,15 @@ gone on reload.
 ## Routing dropped files
 `pickOp` in `core/files.js`: the running op gets the files if its `input`
 accepts them; otherwise the first op in the registry that does. So specific
-ops (`.zip`, `.gz`, `.b64`, `.uu`, `.hex`) are listed before the catch-all `zip`, and
-single-file encoders (`gzip`, `base64`, `uuencode`, `hex`, `input: {}`) come after it: they only
+ops (`.zip`, `.tar`, `.a`/`.deb`, `.gz`, `.b64`, `.uu`, `.hex`, `.b32`/`.a85`/`.qp`/`.urlenc`) are listed before the catch-all `zip`, and
+single-file encoders (`gzip`, `base64`, `uuencode`, `hex`, `encode`, `input: {}`) come after it: they only
 get files while they're the running command. `pickOp` tests in
 `test/zip-test.js` pin this down.
 
 Routing by content: when exactly one file is dropped, the shell runs
 `lib/magic.js` `sniffFile` on it (magic.js is imported on the first drop, not
 with the page) and passes the type to `pickOp`. An op whose `input.sniff`
-lists types (`unzip`: zip; `untar`: tar, tar.gz; `gunzip`: gz, tar.gz;
+lists types (`unzip`: zip; `untar`: tar, tar.gz; `unar`: a, deb; `gunzip`: gz, tar.gz;
 `uudecode`: uu; `unhex`: hex) goes by
 the content when it's recognised, and by the name (`accept`) only when it
 isn't. So `backup.dat` holding a tar.gz opens in untar, a `.tar.gz` that's

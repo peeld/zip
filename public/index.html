@@ -7,22 +7,68 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <!-- Same as the Referrer-Policy header in .htaccess, for hosts that can't set headers (GitHub Pages). -->
 <meta name="referrer" content="no-referrer">
-<title>zipmedia</title>
-<meta name="description" content="Work with files in your browser: zip, unzip and more. Nothing is uploaded.">
+<title>zip.media — zip, unzip, tar, gzip &amp; ar files in your browser</title>
+<meta name="description" content="Free online tool to zip, unzip, extract and create .zip, .tar, .tar.gz, .gz and .ar archives in your browser. Also base64, hex, uuencode and file hashes. Nothing is uploaded — your files never leave your computer.">
+<meta name="keywords" content="unzip online, zip files online, extract zip, open zip file, create zip, tar, untar, tar.gz, tgz, gzip, gunzip, ar archive, compressed files, archive extractor, base64 decode, hex dump, uuencode, file hash, sha256, browser, private, no upload">
+<meta name="robots" content="index, follow">
+<meta name="author" content="Peel Software Development">
+<meta name="application-name" content="zip.media">
+<meta name="theme-color" content="#0b0e0b">
+<link rel="canonical" href="https://zip.media/">
+
+<!-- Open Graph / social previews -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="zip.media">
+<meta property="og:url" content="https://zip.media/">
+<meta property="og:title" content="zip.media — work with compressed files in your browser">
+<meta property="og:description" content="Zip, unzip, tar, gzip and ar archives right in your browser. Nothing is uploaded.">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="zip.media — work with compressed files in your browser">
+<meta name="twitter:description" content="Zip, unzip, tar, gzip and ar archives right in your browser. Nothing is uploaded.">
+
+<!-- Structured data for search engines. A data block, not executed, so CSP script-src does not apply. -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "zip.media",
+  "url": "https://zip.media/",
+  "description": "Create and extract zip, tar, tar.gz, gzip and ar archives in the browser. Files are processed locally and never uploaded.",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Any (web browser)",
+  "browserRequirements": "Requires JavaScript",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "featureList": [
+    "Unzip / extract .zip files",
+    "Create .zip archives",
+    "Extract and create .tar and .tar.gz archives",
+    "gzip and gunzip files",
+    "Extract and create ar archives",
+    "Base64, hex and uuencode encode/decode",
+    "File hashes",
+    "No upload: all processing happens in your browser"
+  ],
+  "creator": { "@type": "Organization", "name": "Peel Software Development", "url": "https://peeldev.com" }
+}
+</script>
 <link rel="stylesheet" href="style.css">
 <script type="module" src="app.js"></script>
 </head>
 <body>
 <h1 class="sr-only">ZipMedia</h1>
+<div class="masthead">
 <pre class="banner" aria-hidden="true">
       _                                  _  _
  ____(_) _ __       _ __ ___    ___   __| |(_)  __ _
 |_  /| || '_ \     | '_ ` _ \  / _ \ / _` || | / _` |
  / / | || |_) |    | | | | | ||  __/| (_| || || (_| |
-/___||_|| .__/  () |_| |_| |_| \___| \__,_||_| \__,_| ~~~ <a href="https://peeldev.com">by Peel Software Development</a>
+/___||_|| .__/  () |_| |_| |_| \___| \__,_||_| \__,_|
         |_|</pre>
-<p class="motd">local file tools. files never leave this tab.<br>type <b>help</b> for a list of commands.</p>
-
+<p class="byline"><span aria-hidden="true">~~~ </span><a href="https://peeldev.com">by Peel Software Development</a></p>
+</div>
+<p class="motd">File processing done by your browser with javascript. files are not uploaded.<br>type <button type="button" class="cmd" id="motd-help">help</button> for a list of commands.</p>
 <div class="layout">
 <div class="side">
 <div id="drop" class="drop">drop files anywhere on this page, or
@@ -39,7 +85,13 @@
 <div id="hint" class="muted" aria-live="polite"></div>
 </div>
 
-<main id="out" aria-live="polite"><noscript>This tool needs JavaScript. It runs entirely in your browser.</noscript></main>
+<main id="out" aria-live="polite"><noscript>
+<p>This tool needs JavaScript. It runs entirely in your browser.</p>
+<p>zip.media is a free online tool for working with compressed files and archives without uploading them.
+Unzip and create .zip files, extract and create .tar and .tar.gz (tgz) archives, gzip and gunzip files,
+pack and unpack .ar archives, encode and decode base64, hex and uuencode, and compute file hashes.
+Everything happens locally on your computer — your files are never sent anywhere.</p>
+</noscript></main>
 </div>
 </body>
 </html>

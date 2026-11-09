@@ -15,6 +15,7 @@ import hashlib
 import http.server
 import io
 import json
+import quopri
 import random
 import shutil
 import subprocess
@@ -25,7 +26,7 @@ import threading
 import time
 import zipfile
 import zlib
-from urllib.parse import unquote
+from urllib.parse import quote, quote_plus, unquote
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -108,10 +109,12 @@ def make_fixtures(work: Path) -> dict:
     (work / "not.b64").write_bytes(b"<html>hello</html>")
     make_uu_fixtures(work, png)
     make_hex_fixtures(work)
+    make_textenc_fixtures(work)
 
     tars = make_tar_fixtures(work, src)
     hashes = make_hash_fixtures(work, src)
-    (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "sources": names, "long": LONG, "hashes": hashes}))
+    ars = make_ar_fixtures(work, src)
+    (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "sources": names, "long": LONG, "hashes": hashes}))
     return {"zips": zips}
 
 
@@ -152,6 +155,50 @@ def make_hex_fixtures(work: Path):
     (work / "rep.hexdump").write_bytes(tool(["hexdump", "-C"], rep))
     (work / "hello.od").write_bytes(tool(["od", "-x"], SOURCES["hello.txt"][:100]))
     (work / "intel.hex").write_bytes(b":10010000214601360121470136007EFE09D2190140\n:00000001FF\n")
+
+
+QP_TEXT = ("Caf\u00e9 = 3 \u20ac, tabs\tand trailing spaces   \n"
+           + "a long line " * 20 + "\r\n=41 is not an escape here\n.\nFrom the start\n\t\n"
+           + "x" * 75 + "=\n" + "y" * 74 + " \nno newline at the end ").encode()
+
+
+def make_textenc_fixtures(work: Path):
+    """base32/base32hex from GNU basenc, ascii85/qp/url from Python (lib/textenc.js)."""
+    def tool(args, data: bytes) -> bytes:
+        return subprocess.run(args, input=data, capture_output=True, check=True).stdout
+
+    rnd = SOURCES["random.bin"]
+    (work / "random.b32").write_bytes(tool(["basenc", "--base32"], rnd))
+    (work / "random.b32hex").write_bytes(tool(["basenc", "--base32hex"], rnd))
+    (work / "short.w0.b32").write_bytes(tool(["base32", "-w", "0"], rnd[:1003]))
+    zeros = b"\0" * 8 + rnd[:5000] + b"\0" * 6
+    (work / "zeros.bin").write_bytes(zeros)
+    (work / "zeros.a85").write_bytes(base64.a85encode(zeros, wrapcol=76, adobe=True) + b"\n")
+    (work / "random.a85").write_bytes(base64.a85encode(rnd, wrapcol=76, adobe=True) + b"\n")
+    (work / "plain.a85").write_bytes(base64.a85encode(rnd[:1001]))  # no <~ ~>, one line
+    (work / "random.qp").write_bytes(binascii.b2a_qp(rnd, istext=False))
+    (work / "qp-src.txt").write_bytes(QP_TEXT)
+    py_qp = binascii.b2a_qp(QP_TEXT)
+    (work / "text.qp").write_bytes(py_qp)
+    (work / "text.qp.out").write_bytes(binascii.a2b_qp(py_qp))
+    (work / "random.urlenc").write_bytes(quote(rnd, safe="").encode())
+    (work / "form.urlenc").write_bytes(quote_plus(QP_TEXT, safe="").encode() + b"\n")
+
+
+def verify_textenc(work: Path, results: list):
+    """The browser's quoted-printable output, decoded by Python."""
+    def check(ok, msg):
+        results.append(f"{'PASS' if ok else 'FAIL'} {msg}")
+
+    for name, want in (("written.qp", SOURCES["random.bin"]), ("written-text.qp", QP_TEXT)):
+        p = work / name
+        if not p.exists():
+            check(False, f"{name} was not uploaded")
+            continue
+        data = p.read_bytes()
+        check(binascii.a2b_qp(data) == want and quopri.decodestring(data) == want, f"{name}: binascii.a2b_qp and quopri decode it")
+        longest = max(len(line) for line in data.split(b"\n"))
+        check(longest <= 76 and all(32 <= c < 127 or c in (9, 10) for c in data), f"{name}: lines <= 76 ({longest}), printable ASCII")
 
 
 HASH_ALGOS = ["md5", "sha1", "sha256", "sha384", "sha512"]
@@ -281,6 +328,84 @@ def verify_tar(work: Path, results: list):
         if shutil.which("tar"):
             r = subprocess.run(["tar", "-tf", str(p)], capture_output=True, text=True)
             check(r.returncode == 0 and LONG in r.stdout.splitlines(), f"tar -t {r.stderr.strip()}")
+
+
+def ar_member(field: str, data: bytes, mtime=TAR_MTIME) -> bytes:
+    """One ar member: the 60-byte header (name field as given) and the data, padded to even."""
+    h = f"{field:<16}{mtime:<12}{0:<6}{0:<6}{'100644':<8}{len(data):<10}`\n".encode()
+    assert len(h) == 60, field
+    return h + data + b"\n" * (len(data) & 1)
+
+
+def make_ar_fixtures(work: Path, src: Path) -> list:
+    """ar archives from GNU ar, a BSD/macOS-style one built by hand, and a .deb from dpkg-deb."""
+    by_base = {n.split("/")[-1]: n for n in SOURCES}
+    ars = []
+    if shutil.which("ar"):
+        subprocess.run(["ar", "rc", str(work / "gnu.a"), *SOURCES], cwd=src, check=True)
+        ars.append({"file": "gnu.a", "count": len(SOURCES), "flavor": "gnu", "symbols": False, "check": by_base})
+        # A GNU symbol table ("/") first, as `ar rcs` writes for object files.
+        raw = (work / "gnu.a").read_bytes()
+        (work / "gnu-sym.a").write_bytes(raw[:8] + ar_member("/", b"\0\0\0\0", 0) + raw[8:])
+        ars.append({"file": "gnu-sym.a", "count": len(SOURCES), "flavor": "gnu", "symbols": True, "check": by_base})
+        cut = bytearray(raw)
+        cut[8 + 58] = ord("x")  # the first header's "`\n"
+        (work / "corrupt.a").write_bytes(cut)
+        (work / "cut.a").write_bytes(raw[:5000])
+    # BSD / macOS: "#1/N" with the name (NUL-padded to 8) at the start of the data,
+    # a "__.SYMDEF SORTED" table, and plain space-padded names when they fit.
+    bsd = [b"!<arch>\n"]
+    def bsd_member(name: str, data: bytes):
+        b = name.encode()
+        if len(b) <= 16 and " " not in name:
+            return ar_member(name, data)
+        b += b"\0" * (-len(b) % 8)
+        return ar_member(f"#1/{len(b)}", b + data)
+    bsd.append(bsd_member("__.SYMDEF SORTED", b"\0" * 8))
+    for base, n in by_base.items():
+        bsd.append(bsd_member(base, SOURCES[n]))
+    (work / "bsd.a").write_bytes(b"".join(bsd))
+    ars.append({"file": "bsd.a", "count": len(SOURCES), "flavor": "bsd", "symbols": True, "check": by_base})
+    (work / "thin.a").write_bytes(b"!<thin>\n" + ar_member("hello.txt/", b""))
+
+    if shutil.which("dpkg-deb"):
+        pkg = work / "pkg"
+        (pkg / "DEBIAN").mkdir(parents=True)
+        (pkg / "DEBIAN" / "control").write_text(
+            "Package: zm-test\nVersion: 1.0\nArchitecture: all\nMaintainer: test <t@example.com>\nDescription: test\n")
+        doc = pkg / "usr" / "share" / "doc" / "zm-test"
+        doc.mkdir(parents=True)
+        (doc / "hello.txt").write_bytes(SOURCES["hello.txt"])
+        subprocess.run(["dpkg-deb", "-Zgzip", "--root-owner-group", "--build", str(pkg), str(work / "pkg.deb")],
+                       check=True, capture_output=True)
+        ars.append({"file": "pkg.deb", "count": 3, "deb": True, "check": {}})
+    return ars
+
+
+def verify_ar(work: Path, results: list):
+    """Check the ar / .deb the browser wrote with GNU ar and dpkg-deb."""
+    def check(ok, msg):
+        results.append(f"{'PASS' if ok else 'FAIL'} {msg}")
+
+    p = work / "written.a"
+    if not p.exists():
+        check(False, "written.a was not uploaded")
+    elif shutil.which("ar"):
+        r = subprocess.run(["ar", "t", str(p)], capture_output=True)
+        want = [n.split("/")[-1] for n in SOURCES]
+        got = r.stdout.decode().splitlines()
+        check(r.returncode == 0 and got == want, f"written.a: ar t lists the names in order ({got})")
+        good = sum(subprocess.run(["ar", "p", str(p), n.split("/")[-1]], capture_output=True).stdout == d
+                   for n, d in SOURCES.items())
+        check(good == len(SOURCES), f"written.a: ar p gives each file's content ({good}/{len(SOURCES)})")
+    p = work / "written.deb"
+    if shutil.which("dpkg-deb"):
+        if not p.exists():
+            return check(False, "written.deb was not uploaded")
+        r = subprocess.run(["dpkg-deb", "-c", str(p)], capture_output=True, text=True)
+        i = subprocess.run(["dpkg-deb", "-f", str(p), "Package"], capture_output=True, text=True)
+        check(r.returncode == 0 and "zm-test/hello.txt" in r.stdout and i.stdout.strip() == "zm-test",
+              f"written.deb: dpkg-deb reads it {r.stderr.strip()} {i.stderr.strip()}")
 
 
 def verify_written(path: Path, label: str, results: list):
@@ -414,7 +539,9 @@ def main():
 
     verify_gzip(work, results)
     verify_tar(work, results)
+    verify_ar(work, results)
     verify_sums(work, results)
+    verify_textenc(work, results)
 
     print("\n".join(results))
     fails = sum(r.startswith("FAIL") for r in results)

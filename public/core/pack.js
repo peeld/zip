@@ -6,7 +6,7 @@
 //   import { packOp } from '../../core/pack.js';
 //   export const mount = packOp({
 //     verb: 'Create zip',
-//     option: { label: 'Compress', checked: true },
+//     option: { label: 'Compress', checked: true },   // optional: no checkbox without it
 //     fixName: (name, option) => …,       // the archive's file name, e.g. adds .zip
 //     save: (option) => ({ mime }),      // the download's content type
 //     make: (items, { option, onProgress }) => Blob or ReadableStream,
@@ -23,7 +23,7 @@ export function packOp({ verb, option, fixName, save, make }) {
     let busy = false;
     const t = task();
     const summary = el('div', { className: 'muted' });
-    const opt = el('input', { type: 'checkbox', checked: option.checked });
+    const opt = el('input', { type: 'checkbox', checked: !!option?.checked });
     const nameInput = el('input', { value: fixName('archive', opt.checked), spellcheck: false });
     opt.onchange = () => { nameInput.value = fixName(nameInput.value, opt.checked); };
     const go = button(verb, create, { primary: true, disabled: true });
@@ -31,7 +31,7 @@ export function packOp({ verb, option, fixName, save, make }) {
 
     root.append(
       summary,
-      row(el('label', {}, 'Name ', nameInput), el('label', {}, opt, ` ${option.label}`), go),
+      row(el('label', {}, 'Name ', nameInput), ...(option ? [el('label', {}, opt, ` ${option.label}`)] : []), go),
       t.el,
       made.el,
     );

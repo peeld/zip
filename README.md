@@ -1,6 +1,6 @@
 # ZipMedia
 
-File tools that run in the browser (currently: zip, unzip, tar, untar, gzip, gunzip, base64, unbase64, uuencode, uudecode, hex, unhex, hash). Files are never uploaded: all the
+File tools that run in the browser (currently: zip, unzip, tar, untar, ar, unar, gzip, gunzip, base64, unbase64, uuencode, uudecode, hex, unhex, encode, decode, hash). Files are never uploaded: all the
 work happens in the user's tab. The site is plain static files with no
 dependencies and no build step.
 
@@ -8,8 +8,8 @@ dependencies and no build step.
 
 The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
 list commands, then a command such as `unzip` or `zip`. Or just drop files:
-a single .zip opens in `unzip`, a .tar / .tar.gz in `untar`, a .gz in
-`gunzip`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, anything else goes to `zip`. To check a download, run `hash` and drop the file
+a single .zip opens in `unzip`, a .tar / .tar.gz in `untar`, a .a / .deb in `unar`, a .gz in
+`gunzip`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, a .b32 / .a85 / .qp / .urlenc in `decode`, anything else goes to `zip`. To check a download, run `hash` and drop the file
 together with its `SHA256SUMS` (or paste the expected hash). A single file
 is matched by its content first (a gzipped tar called `backup.dat` still
 opens in `untar`), its name second. `help <command>` says what a command takes. `#unzip` in the
@@ -24,12 +24,12 @@ public/              deploy this folder as the web root
   style.css
   .htaccess          security headers for Apache
   core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform, archive, pack)
-  lib/               shared processing libraries (zip.js, tar.js, gzip.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js)
+  lib/               shared processing libraries (zip.js, tar.js, ar.js, gzip.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js)
   ops/registry.js    list of ops (id = command name), in help order
   ops/<id>/op.js     one folder per operation
 test/
   run_tests.py       runs lib code and every op in headless Firefox, checks
-                     lazy loading, and verifies written zips/tars/checksum lists with Python, `unzip -t`, `tar -t` and `sha256sum -c`
+                     lazy loading, and verifies written zips/tars/ar/.deb/checksum lists with Python, `unzip -t`, `tar -t`, `ar t`, `dpkg-deb` and `sha256sum -c`
 ```
 
 To add a new operation, see [docs/ref/adding-an-op.md](docs/ref/adding-an-op.md).
@@ -66,7 +66,7 @@ and `Permissions-Policy` only work as headers, so Pages doesn't get them.
 python3 test/run_tests.py
 ```
 
-Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od` and coreutils `sha256sum` / `md5sum` for fixtures and extra checks). Snap Firefox works too.
+Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, binutils `ar`, `dpkg-deb` and coreutils `sha256sum` / `md5sum` for fixtures and extra checks; the ar and .deb checks are skipped without them). Snap Firefox works too.
 
 ## Deploy
 
@@ -86,9 +86,11 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od` an
 | Extract all into a folder | folder picker | one download per file | one download per file |
 | gzip / gunzip | yes | yes | 16.4+ |
 | tar / untar (.tar.gz) | yes | yes | 16.4+ |
+| ar / unar (.a, .deb) | yes | yes | yes |
 | base64 / unbase64 | yes | yes | yes |
 | uuencode / uudecode | yes | yes | yes |
 | hex / unhex | yes | yes | yes |
+| encode / decode (base32, ascii85, quoted-printable, URL) | yes | yes | yes |
 | hash (copy needs https or localhost) | yes | yes | yes |
 
 ## Limits of lib/tar.js
@@ -99,6 +101,13 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od` an
   decompresses everything before it.
 - Written tars have been checked with GNU tar and Python's tarfile. Files over
   8 GB use a pax size header but haven't been tested with a real file.
+
+## Limits of lib/ar.js
+
+- Reads GNU, BSD/macOS and plain ar archives (.a libraries, .deb packages).
+  Symbol tables are skipped. Thin archives are rejected.
+- ar has no folders: `ar` stores only file names, and refuses two files with
+  the same name. It writes no symbol table (run `ranlib` for a linkable library).
 
 ## Limits of lib/zip.js
 

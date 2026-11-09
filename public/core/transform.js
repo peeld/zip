@@ -21,14 +21,20 @@
 //   outName     (file, info) => suggested output file name.
 //   inspect     optional async (file) => info: { text, size }. Runs when a file
 //               arrives; `text` is shown under the file name. Throw to reject the file.
-//   save        { mime, … }: the download's content type.
+//   save        { mime, … }: the download's content type, or (choice) => { mime, … }.
+//   choice      optional { label, options: [[value, text], …] }: a select next to
+//               the name (encode/decode: the format). Its value is passed on as
+//               `choice` to transform, outName and inspect. Changing it re-runs
+//               inspect(file, { choice, arrived: false }); when a file arrives
+//               (arrived: true) inspect can return info.choice to set the select.
 import { el, button, row, fmtBytes, task } from './ui.js';
 import { countBytes, streamToBlob } from './streams.js';
 import { products } from './products.js';
 
-export function transformOp({ verb, transform, outName, inspect, save = {} }) {
+export function transformOp({ verb, transform, outName, inspect, save = {}, choice }) {
   return function mount(root) {
-    let file = null;
+    let file = null;    // the file, once inspect accepted it
+    let current = null; // the last file that arrived (accepted or not)
     let info = null;
     let busy = false;
     let opened = 0; // bumps per file, so a slow inspect of an older file is ignored
@@ -37,19 +43,22 @@ export function transformOp({ verb, transform, outName, inspect, save = {} }) {
     const nameInput = el('input', { spellcheck: false, size: 40 });
     const go = button(verb, run, { primary: true, disabled: true });
     const made = products();
+    const pick = choice && el('select', {}, ...choice.options.map(([value, text]) => el('option', { value }, text)));
+    if (pick) pick.onchange = () => { if (current && !busy) open(current, false); };
 
     root.append(
       t.el,
       about,
-      row(el('label', {}, 'Name ', nameInput), go),
+      row(...(pick ? [el('label', {}, `${choice.label} `, pick)] : []), el('label', {}, 'Name ', nameInput), go),
       made.el,
     );
     t.status('no file yet: drop one, or [use] a file on the list');
 
-    const ready = (ok) => { go.disabled = !ok || busy; };
+    const ready = (ok) => { go.disabled = !ok || busy; if (pick) pick.disabled = busy; };
 
-    async function open(f) {
+    async function open(f, arrived = true) {
       const id = ++opened;
+      current = f;
       file = null;
       info = null;
       ready(false);
@@ -57,22 +66,24 @@ export function transformOp({ verb, transform, outName, inspect, save = {} }) {
       t.progress(null);
       t.status(`${f.name}: ${fmtBytes(f.size)}`);
       try {
-        const i = inspect ? await inspect(f) : {};
+        const i = inspect ? await inspect(f, { choice: pick?.value, arrived }) : {};
         if (id !== opened) return;
         info = i || {};
+        if (pick && arrived && info.choice) pick.value = info.choice;
       } catch (e) {
         if (id === opened) t.status(`${f.name}: ${e.message}`, true);
         return;
       }
       file = f;
       about.textContent = info.text || '';
-      nameInput.value = outName(f, info);
+      nameInput.value = outName(f, info, pick?.value);
       ready(true);
     }
 
     async function run() {
       const src = file;
-      const name = nameInput.value.trim() || outName(src, info);
+      const picked = pick?.value;
+      const name = nameInput.value.trim() || outName(src, info, picked);
       busy = true;
       ready(false);
       let read = 0;
@@ -80,8 +91,8 @@ export function transformOp({ verb, transform, outName, inspect, save = {} }) {
       try {
         const onBytes = (n) => t.progress(read += n, src.size);
         const stream = () => src.stream().pipeThrough(countBytes(onBytes));
-        const blob = await streamToBlob(transform({ file: src, info, stream, onBytes }));
-        made.add(name, blob, save);
+        const blob = await streamToBlob(transform({ file: src, info, stream, onBytes, choice: picked }));
+        made.add(name, blob, typeof save === 'function' ? save(picked) : save);
         t.status(`${src.name} -> ${name} (${fmtBytes(blob.size)})`);
       } catch (e) {
         t.fail(e);

@@ -1,7 +1,9 @@
 # New commands: archive and encoding formats
 
 Built so far: `gzip` / `gunzip`, `base64` / `unbase64`, `tar` / `untar`,
-`uuencode` / `uudecode`, `hex` / `unhex`, `hash`. Next up: **`ar`**. How the built ones behave, and the decisions they
+`ar` / `unar`, `uuencode` / `uudecode`, `hex` / `unhex`, `hash`, and
+`encode` / `decode` (base32, base32hex, ascii85, quoted-printable, URL). Next
+up: **cpio**, then Tier 2. How the built ones behave, and the decisions they
 settled: [../ref/formats.md](../ref/formats.md).
 
 The site has no dependencies and no build step, and the CSP blocks WebAssembly
@@ -44,6 +46,18 @@ and add their content type to the registry `sniff` list (see
 - [ ] hash: a dropped checksum list only routes to `hash` while it's
   running (otherwise it goes to `zip`). Routing by name (`SHA256SUMS`) would
   need `accept` to match whole names, not only extensions.
+- [ ] unar: offer "open with untar" for a .deb's `data.tar.gz` /
+  `control.tar.gz` instead of save-then-drop (same question as gunzip below).
+- [ ] ar: put `debian-binary`, `control.tar.*`, `data.tar.*` first when
+  they're all in the list, so a repacked .deb is valid whatever the list order.
+- [ ] ar: a BSD (`#1/N`) output option for macOS `ld`, if anyone asks (llvm
+  tools read GNU names).
+- [ ] encode / decode: Z85 (ZeroMQ) and btoa-style ascii85 output; `-w`
+  for base32 once arguments exist. Aliases (`base32`, `unbase32`, `qp`, …)
+  that pre-pick the format, once the registry has aliases (commands.md).
+- [ ] decode: only goes by name (`.b32`, `.qp`, …) or while running. Could
+  sniff by content, but `detectEncoding` is a guess (qp vs ascii85 vs text),
+  so it would need to be careful not to grab ordinary text files from `zip`.
 - [ ] unbase64: skip PEM `-----BEGIN …` / `-----END …` lines instead of
   rejecting them.
 
@@ -52,11 +66,9 @@ and add their content type to the registry `sniff` list (see
 | Command | Format | Work | Notes |
 |---|---|---|---|
 | `zlib` / `unzlib` | .zz / zlib | tiny | `CompressionStream('deflate')`. Low demand; could fold into gzip later. |
-| `ar` / `unar` | .ar, .a, .deb | small | Fixed 60-byte headers. A .deb is ar(debian-binary, control.tar.*, data.tar.*), so with untar this opens .deb packages (if data.tar is gzip; xz needs Tier 2). Rename if `unar` clashes with the well-known unarchiver tool name. |
 | `cpio` / `uncpio` | newc / odc cpio | small | Used in initramfs and .rpm payloads. Low demand. |
-| `base32`, `ascii85`, `qp`, `urlenc` | text encodings | tiny each | Maybe one `encode` op with a format picker instead of four commands. |
 
-Suggested order: **ar** (ar + untar opens .deb), then the text encodings.
+Suggested order: cpio, then zlib (or fold it into gzip).
 
 ## Tier 2: pure JS, a real decoder
 
@@ -91,6 +103,9 @@ Suggested order: **ar** (ar + untar opens .deb), then the text encodings.
 
 - gunzip of a `.tar.gz` gives a `.tar` to save (only when gunzip is running:
   drops go to untar). Should it also offer "open with untar"?
+- `unar` was kept (consistent `un<format>` naming) although it's also the
+  name of The Unarchiver's do-everything CLI. If a sniffing `open` command
+  arrives, `unar` could become an alias of it.
 - Should `untar` / `uudecode` / `unar` / `un7z` stay separate commands, or should one
   `open` (or `x`) command sniff the format and use the shared archive UI? The
   separate commands could then be aliases. Leaning toward one `open` plus aliases
