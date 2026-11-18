@@ -24,18 +24,20 @@ export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'e
 export const OPS = [
   { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
     input: { accept: '.zip,application/zip', sniff: ['zip'] } },
-  // untar / uncpio before gunzip / unxz, so a .tar.gz / .cpio.xz opens as an archive. gunzip / unxz
-  // still take one while they're the running command.
-  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar, .tar.gz or .tar.xz and extract them.',
-    input: { accept: '.tar,.tgz,.tar.gz,.txz,.tar.xz,application/x-tar', sniff: ['tar', 'tar.gz', 'tar.xz'] } },
+  // untar / uncpio before gunzip / unxz / unzstd, so a .tar.gz / .cpio.xz opens as an archive.
+  // gunzip / unxz / unzstd still take one while they're the running command.
+  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar, .tar.gz, .tar.xz or .tar.zst and extract them.',
+    input: { accept: '.tar,.tgz,.tar.gz,.txz,.tar.xz,.tzst,.tar.zst,application/x-tar', sniff: ['tar', 'tar.gz', 'tar.xz', 'tar.zst'] } },
   { id: 'unar', group: 'archive', title: 'Open an ar archive', description: 'View the files in an ar archive (.a library, .deb package) and extract them.',
     input: { accept: '.a,.ar,.deb,application/x-archive,application/vnd.debian.binary-package', sniff: ['a', 'deb'] } },
-  { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz or .cpio.xz (initramfs) and extract them.',
-    input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz'] } },
+  { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz, .cpio.xz or .cpio.zst (initramfs) and extract them.',
+    input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,.cpio.zst,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz', 'cpio.zst'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
     input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
   { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.',
     input: { accept: '.xz,.lzma,.txz,.tlz,application/x-xz', sniff: ['xz', 'tar.xz', 'cpio.xz', 'lzma'] } },
+  { id: 'unzstd', group: 'compress', title: 'Decompress a zstd file', description: 'Decompress a .zst (Zstandard) file.',
+    input: { accept: '.zst,.zstd,.tzst,application/zstd', sniff: ['zst', 'tar.zst', 'cpio.zst'] } },
   // brotli has no magic number: by name only. Needs the browser's native decoder (lib/brotli.js).
   { id: 'unbrotli', group: 'compress', title: 'Decompress a brotli file', description: 'Decompress a .br file.',
     input: { accept: '.br' } },

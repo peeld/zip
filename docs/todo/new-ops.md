@@ -3,11 +3,10 @@
 Built so far: `gzip` / `gunzip`, `base64` / `unbase64`, `tar` / `untar`,
 `ar` / `unar`, `cpio` / `uncpio`, `uuencode` / `uudecode`, `hex` / `unhex`,
 `hash`, `encode` / `decode` (base32, base32hex, ascii85, quoted-printable,
-URL), `brotli` / `unbrotli` (native) and `unxz` (.xz, .lzma; also .tar.xz /
-.cpio.xz in untar / uncpio). Tier 1 is done except zlib (low demand). Next
-up in Tier 2: **`unzstd`** (not native in Firefox 153, so it has to be
-written; it also unlocks most .rpm and initramfs payloads), then `un7z` on
-`lib/lzma.js`. How the built ones behave, and the decisions they settled:
+URL), `brotli` / `unbrotli` (native), `unxz` (.xz, .lzma; also .tar.xz /
+.cpio.xz in untar / uncpio) and `unzstd` (.zst; also .tar.zst / .cpio.zst
+and a .deb's `data.tar.zst`). Tier 1 is done except zlib (low demand). Next
+up in Tier 2: **`un7z`** on `lib/lzma.js`. How the built ones behave, and the decisions they settled:
 [../ref/formats.md](../ref/formats.md).
 
 The site has no build step and stays light. Small third-party libraries are
@@ -67,7 +66,8 @@ and add their content type to the registry `sniff` list (see
   sniff by content, but `detectEncoding` is a guess (qp vs ascii85 vs text),
   so it would need to be careful not to grab ordinary text files from `zip`.
 - [ ] uncpio: .rpm (lead + signature + header, then a compressed cpio
-  payload: zstd on current Fedora/RHEL, xz on older ones). xz works now.
+  payload: zstd on current Fedora/RHEL, xz on older ones). Both decoders
+  exist now; only the rpm headers are left.
 - [ ] uncpio: hard links could be extracted as copies (plain .cpio only),
   same as the untar item. newc+crc checksums aren't checked.
 - [ ] unbrotli / brotli: check Chrome and Safari for native `'brotli'`
@@ -79,9 +79,17 @@ and add their content type to the registry `sniff` list (see
 - [ ] unxz: speed (~15 MB/s output). The decoder keeps its range-coder state
   in `this.*`; local variables in the hot loop should help a lot. And/or a
   Web Worker (TODO.md).
-- [ ] uncpio: a microcode cpio followed by an xz cpio can now be read, but
-  isn't yet: the second part is still reported as `trailing`. Decompress it
-  (gzip/xz now, zstd later) and keep listing.
+- [ ] uncpio: a microcode cpio followed by a compressed cpio (the usual
+  initramfs) can now be read, but isn't yet: the second part is still
+  reported as `trailing`. Decompress it (gzip / xz / zstd all exist now) and
+  keep listing.
+- [ ] unzip: zstd entries (method 93) could use `lib/zstd.js` now (and xz,
+  method 95, `lib/xz.js`). They're rare outside 7-Zip / WinZip.
+- [ ] unzstd: speed (~35 MB/s in Firefox). Most time is the sequence loop;
+  the literal / match copies are byte loops below 16 / 32 bytes. A Web
+  Worker would keep the page responsive (TODO.md).
+- [ ] unzstd: dictionaries (`zstd -D`). Rare in files; would need a way to
+  give the dictionary (drop two files?).
 - [ ] unbase64: skip PEM `-----BEGIN …` / `-----END …` lines instead of
   rejecting them.
 
@@ -98,8 +106,7 @@ Only zlib is left (or fold it into gzip).
 | Command | Format | Work | Notes |
 |---|---|---|---|
 | (in `gunzip`/`untar`) `bunzip2` | .bz2, .tar.bz2 | ~400 lines | Decode only (Huffman + inverse BWT). Encode is harder. Leave it out. |
-| `unzstd` | .zst, .tar.zst | ~600 lines | Decode only. **Next.** Not native in Firefox 153 (`DecompressionStream('zstd')` throws; checked 2026-11-08). Unlocks .rpm and most initramfs payloads, and newer .deb (`data.tar.zst`). Add it to `lib/decompress.js` for untar / uncpio. |
-| `un7z` | .7z | med | Container parsing + LZMA/LZMA2 (`lib/lzma.js` is ready: `lzma2Chunks`, `LzmaDecoder`) + store, plus the BCJ x86 filter (in `lib/xz.js`; move it out to share). No AES and no PPMd at first. The header itself is often LZMA-compressed. |
+| `un7z` | .7z | med | **Next.** Container parsing + LZMA/LZMA2 (`lib/lzma.js` is ready: `lzma2Chunks`, `LzmaDecoder`) + store, plus the BCJ x86 filter (in `lib/xz.js`; move it out to share). No AES and no PPMd at first. The header itself is often LZMA-compressed. |
 | `lz4` / `unlz4` | .lz4 frame | small–med | Both directions are simple. Low demand. |
 | `uniso` | .iso (ISO 9660 + Joliet) | med | Random access via `Blob.slice`, like zip. No UDF at first. |
 | zip: encryption | ZipCrypto, WinZip AES | med | Fits in the existing `unzip`. AES-CTR, PBKDF2 and HMAC-SHA1 are all in `crypto.subtle`. Needs a password prompt in the UI. |

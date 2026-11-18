@@ -1,17 +1,21 @@
 // Which compression wraps an archive, and a stream of the data inside it.
-// Shared by the tar and cpio readers (.tar.gz, .tar.xz, .cpio.xz, …). No DOM.
-// gzip is native (lib/gzip.js); the xz decoder (lib/xz.js) is only
-// downloaded when an .xz file is opened.
+// Shared by the tar and cpio readers (.tar.gz, .tar.xz, .cpio.zst, …). No DOM.
+// gzip is native (lib/gzip.js); the xz and zstd decoders (lib/xz.js,
+// lib/zstd.js) are only downloaded when such a file is opened.
 
 import { isGzip, gunzip } from './gzip.js';
 
 const XZ = [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00];
+const ZSTD = [0x28, 0xb5, 0x2f, 0xfd];
 
-/** 'gzip', 'xz' or null, from the first bytes of a Blob. */
+/** 'gzip', 'xz', 'zstd' or null, from the first bytes of a Blob. */
 export async function compression(blob) {
   const b = new Uint8Array(await blob.slice(0, 6).arrayBuffer());
   if (isGzip(b)) return 'gzip';
   if (b.length === 6 && XZ.every((x, i) => b[i] === x)) return 'xz';
+  // A zstd frame, or a skippable frame first (pzstd writes one).
+  if (b.length >= 4 && (ZSTD.every((x, i) => b[i] === x)
+    || ((b[0] & 0xf0) === 0x50 && b[1] === 0x2a && b[2] === 0x4d && b[3] === 0x18))) return 'zstd';
   return null;
 }
 
@@ -32,5 +36,6 @@ function lazyStream(start) {
 export function decompress(blob, kind) {
   if (kind === 'gzip') return gunzip(blob);
   if (kind === 'xz') return lazyStream(async () => (await import('./xz.js')).unxz(blob));
+  if (kind === 'zstd') return lazyStream(async () => (await import('./zstd.js')).unzstd(blob));
   throw new Error(`unknown compression: ${kind}`);
 }

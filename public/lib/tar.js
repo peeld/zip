@@ -1,7 +1,7 @@
 // tar (ustar / pax / GNU) reader and writer. No DOM.
 //
 // Reading: a plain .tar is a Blob, read with Blob.slice (random access, so
-// listing a multi-GB tar only touches its headers). A .tar.gz / .tar.xz can
+// listing a multi-GB tar only touches its headers). A .tar.gz / .tar.xz / .tar.zst can
 // only be read from the start (lib/decompress.js): listing decompresses it
 // once, and opening an entry decompresses up to that entry again. tarWalk() does one pass over every
 // entry, for "extract all".
@@ -149,8 +149,8 @@ async function* walk(src) {
 export const isTar = (b) => b.length >= BLOCK && !b.subarray(0, BLOCK).every((x) => x === 0) && checksumOk(b);
 
 /**
- * List a .tar, .tar.gz or .tar.xz Blob. Resolves to { entries, compressed }
- * (compressed: 'gzip', 'xz' or null). Throws if it isn't a tar (or a gzip / xz holding one).
+ * List a .tar, .tar.gz, .tar.xz or .tar.zst Blob. Resolves to { entries, compressed }
+ * (compressed: 'gzip', 'xz', 'zstd' or null). Throws if it isn't a tar (or a compressed file holding one).
  */
 export async function readTar(blob) {
   const compressed = await compression(blob);
@@ -168,7 +168,7 @@ export async function readTar(blob) {
 const sourceFor = (blob, compressed) =>
   (compressed ? streamSource(decompress(blob, compressed === true ? 'gzip' : compressed)) : blobSource(blob));
 
-/** The data of one entry (from readTar) as a stream. For a .tar.gz / .tar.xz this decompresses up to the entry. */
+/** The data of one entry (from readTar) as a stream. For a compressed tar this decompresses up to the entry. */
 export function openTarEntry(blob, entry, { compressed = null } = {}) {
   if (!compressed) {
     if (entry.offset + entry.size > blob.size) throw cutOff();

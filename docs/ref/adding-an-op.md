@@ -27,8 +27,9 @@ public/
     gzip.js                       gzip, gunzip, parseHeader, gunzipName, isGzip
     xz.js                         unxz, xzInfo, lzmaInfo, unxzName, isXz, crc64 (.xz and legacy .lzma, decode only)
     lzma.js                       LzmaDecoder, lzma2Chunks, lzmaAlone, isLzmaAlone (the LZMA core, for xz and later 7z)
+    zstd.js                       unzstd, zstdInfo, unzstdName, isZstd, xxh64 (.zst, decode only)
     brotli.js                     brotli, unbrotli, canBrotli, canUnbrotli (the browser's native codec)
-    decompress.js                 compression, decompress (gzip / xz around a tar or cpio; loads xz.js on demand)
+    decompress.js                 compression, decompress (gzip / xz / zstd around a tar or cpio; loads xz.js / zstd.js on demand)
     base64.js                     base64Encode, base64Decode, parseDataUrl, unbase64Name
     uu.js                         uuEncode, readUu, openUuEntry
     hex.js                        hexEncode, hexDecode, hexFormat, unhexSize
@@ -43,7 +44,7 @@ public/
   vendor/<name>/                  third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/
     registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
-    unzip/ untar/ unar/ uncpio/ zip/ tar/ ar/ cpio/ gunzip/ gzip/ unxz/ unbrotli/ brotli/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/   one op.js each
+    unzip/ untar/ unar/ uncpio/ zip/ tar/ ar/ cpio/ gunzip/ gzip/ unxz/ unzstd/ unbrotli/ brotli/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/   one op.js each
 ```
 
 Rules:

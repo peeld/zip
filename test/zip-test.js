@@ -16,6 +16,7 @@ import { base32Encode, base32Decode, ascii85Encode, ascii85Decode, qpEncode, qpD
 import { brotli, unbrotli, canBrotli, canUnbrotli } from '../public/lib/brotli.js';
 import { unxz, xzInfo, crc64, unxzName, isXz, lzmaInfo } from '../public/lib/xz.js';
 import { isLzmaAlone } from '../public/lib/lzma.js';
+import { unzstd, zstdInfo, unzstdName, isZstd, xxh64 } from '../public/lib/zstd.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
@@ -322,6 +323,84 @@ async function run() {
     for (const n of ['text.xz', 'python.tar.xz', 'text.lzma', 'known.lzma', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
     if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.xz')));
     check(types.join() === 'xz,tar.xz,lzma,lzma,' + (manifest.cpios.length ? ',cpio.xz' : ''), `sniffFile: xz, tar.xz, lzma, cpio.xz (${types.join()})`);
+  }
+
+  // 6k. zstd (lib/zstd.js): the zstd tool made the fixtures (none without it).
+  if (!manifest.zstds.length) skip('zstd: the zstd tool is not installed, no fixtures');
+  else {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    const e = xxh64().digest();
+    check(e.hi === 0xef46db37 && e.lo === 0x51d8e999, 'xxh64: check value of ""');
+    for (const x of manifest.zstds) {
+      const blob = await fx2(x.file);
+      const t = performance.now();
+      let got, msg = '';
+      try { got = await read(unzstd(blob)); } catch (e) { msg = e.message; }
+      const want = await bytes(await fx2(x.want));
+      check(got && same(got, want), `unzstd: ${x.file} (${want.length} bytes, ${Math.round(performance.now() - t)} ms) ${msg}`);
+      const info = await zstdInfo(blob);
+      check(info.size === x.size, `zstdInfo: ${x.file} size ${info.size}, ${info.frames} frame(s), window ${info.window}`);
+    }
+    const info = async (n) => zstdInfo(await fx2(n));
+    check((await info('multi.zst')).frames === 2 && (await info('skip.zst')).frames === 1 && (await info('sizes.zst')).frames === 15
+      && (await info('text-nocheck.zst')).checksum === false && (await info('text.zst')).checksum === true,
+      'zstdInfo: frames (skippable ones not counted), checksum flag');
+    let progress = 0;
+    const tz = await fx2('text-19.zst');
+    await read(unzstd(tz, { onBytes: (n) => { progress += n; } }));
+    check(progress === tz.size, `unzstd: onBytes reaches the file size (${progress}/${tz.size})`);
+    const m = {};
+    for (const n of ['corrupt.zst', 'cut.zst', 'badcheck.zst', 'junk.zst', 'dict.zst', 'bigwindow.zst']) {
+      m[n] = await err(async () => read(unzstd(await fx2(n))));
+    }
+    check(/^corrupt|checksum failed/.test(m['corrupt.zst']), `unzstd: a flipped byte is caught (${m['corrupt.zst']})`);
+    check(m['cut.zst'] === 'zstd file is cut off', `unzstd: cut off (${m['cut.zst']})`);
+    check(m['badcheck.zst'] === 'zstd checksum failed: the data is corrupt', `unzstd: wrong checksum (${m['badcheck.zst']})`);
+    check(m['junk.zst'].startsWith('not zstd data after the end'), `unzstd: junk after the end (${m['junk.zst']})`);
+    check(m['dict.zst'] === "this zstd file needs a dictionary (id 7), which isn't supported", `unzstd: dictionary named (${m['dict.zst']})`);
+    check(m['bigwindow.zst'].startsWith('this zstd file needs a 2048 MB window'), `unzstd: window limit (${m['bigwindow.zst']})`);
+    const cutInfo = await err(async () => zstdInfo(await fx2('cut.zst')));
+    const notZstd = await err(async () => read(unzstd(await fx2('src/random.bin'))));
+    check(cutInfo === 'zstd file is cut off' && notZstd === 'not a zstd file', `zstdInfo: cut off; unzstd: not zstd (${cutInfo} / ${notZstd})`);
+    const start = await readStart(unzstd(await fx2('picture.zst')), 512);
+    check(sniffType(start.bytes)?.ext === 'png' && !start.done, 'unzstd: readStart sees the PNG inside');
+    check(unzstdName('a.txt.zst') === 'a.txt' && unzstdName('x.tzst') === 'x.tar' && unzstdName('pic.zst', { ext: 'png' }) === 'pic.png'
+      && unzstdName('a.ZSTD') === 'a' && unzstdName('data') === 'data.out', 'unzstdName');
+    const head = async (n) => new Uint8Array(await (await fx2(n)).slice(0, 4).arrayBuffer());
+    check(isZstd(await head('text.zst')) && isZstd(await head('skip.zst')) && !isZstd(await head('src/random.bin')), 'isZstd');
+
+    // Archives inside zstd: untar / uncpio read them through lib/decompress.js.
+    const tzst = await fx2('python.tar.zst');
+    const t = await readTar(tzst);
+    const hello = t.entries.find((e) => e.name === 'hello.txt');
+    check(t.compressed === 'zstd' && t.entries.filter((e) => e.kind === 'file').length === manifest.sources.length
+      && same(await read(openTarEntry(tzst, hello, { compressed: 'zstd' })), await bytes(await fx2('src/hello.txt'))),
+      'readTar: a .tar.zst (list, open one entry)');
+    let walked = 0;
+    for await (const { stream } of tarWalk(tzst, { compressed: 'zstd' })) if (stream) { await read(stream); walked++; }
+    check(walked === manifest.sources.length, `tarWalk: one pass over a .tar.zst (${walked})`);
+    if (manifest.cpios.length) {
+      const czst = await fx2('newc.cpio.zst');
+      const c2 = await readCpio(czst);
+      const h2 = c2.entries.find((e) => e.name === 'hello.txt');
+      check(c2.compressed === 'zstd' && same(await read(openCpioEntry(czst, h2, { compressed: 'zstd' })), await bytes(await fx2('src/hello.txt'))),
+        'readCpio: a .cpio.zst');
+    }
+    const zdeb = await fetch('/fixtures/pkg-zstd.deb');
+    if (zdeb.ok) {
+      const blob = await zdeb.blob();
+      const zd = (await readAr(blob)).entries.find((e) => e.name === 'data.tar.zst');
+      const inner = zd && blob.slice(zd.offset, zd.offset + zd.size);
+      const ztar = inner && await readTar(inner);
+      const zhello = ztar?.entries.find((e) => e.name.endsWith('zm-test/hello.txt'));
+      check(ztar?.compressed === 'zstd' && zhello && same(await read(openTarEntry(inner, zhello, { compressed: 'zstd' })), await bytes(await fx2('src/hello.txt'))),
+        'pkg-zstd.deb (dpkg-deb -Zzstd): data.tar.zst opens with untar');
+    } else skip('pkg-zstd.deb: dpkg-deb not installed or has no zstd');
+    const types = [];
+    for (const n of ['text.zst', 'python.tar.zst', 'skip.zst', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
+    if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.zst')));
+    check(types.join() === 'zst,tar.zst,zst,' + (manifest.cpios.length ? ',cpio.zst' : ''), `sniffFile: zst, tar.zst, cpio.zst (${types.join()})`);
   }
 
   // 6c. base64 / unbase64, checked byte for byte against Python's output.
@@ -918,6 +997,10 @@ async function run() {
       && by('a.dat', 'xz') === 'unxz' && by('a.dat', 'lzma') === 'unxz' && by('a.xz', 'tar.xz') === 'untar' && by('i.img', 'cpio.xz') === 'uncpio'
       && by('a.tar.xz', 'tar.xz', 'unxz') === 'unxz' && id([f('x.tlz')]) === 'unxz',
       'pickOp: .xz/.lzma -> unxz, .tar.xz/.txz or tar inside -> untar, cpio inside -> uncpio, unxz keeps them while running');
+    check(id([f('a.zst')]) === 'unzstd' && id([f('a.tar.zst')]) === 'untar' && id([f('a.tzst')]) === 'untar' && id([f('i.cpio.zst')]) === 'uncpio'
+      && by('a.dat', 'zst') === 'unzstd' && by('a.zst', 'tar.zst') === 'untar' && by('i.img', 'cpio.zst') === 'uncpio'
+      && by('a.tar.zst', 'tar.zst', 'unzstd') === 'unzstd',
+      'pickOp: .zst -> unzstd, .tar.zst/.tzst or tar inside -> untar, cpio inside -> uncpio, unzstd keeps them while running');
     check(id([f('a.css.br')]) === 'unbrotli' && id([f('B.BR')]) === 'unbrotli' && id([jpg], 'brotli') === 'brotli' && id([jpg, jpg], 'brotli') === 'zip',
       'pickOp: .br -> unbrotli (by name: brotli has no magic number), brotli takes one file while running');
     check(id([f('a.b64')]) === 'unbase64' && id([f('a.BASE64')]) === 'unbase64' && id([jpg], 'base64') === 'base64',
@@ -1022,12 +1105,36 @@ async function run() {
         await api.addFiles([{ path: 'arm.xz', file: new File([await fx2('arm.xz')], 'arm.xz') }]);
         check(root.textContent.includes("ARM filter isn't supported") && root.querySelector('button.primary').disabled, 'unxz op: rejects an unsupported filter');
       }
+      if (op.id === 'unzstd' && manifest.zstds.length) {
+        const file = new File([await fx2('small.zst')], 'notes.txt.zst');
+        await api.addFiles([{ path: file.name, file }]);
+        const name = root.querySelector('input').value;
+        check(name === 'notes.txt' && root.textContent.includes('zstd, checksum') && root.textContent.includes('97.7 KB uncompressed'),
+          `unzstd op: reads the frame headers (${name}; ${root.querySelector('.muted')?.textContent})`);
+        const { row, text } = await make(root);
+        check(row.startsWith('notes.txt') && text.length > 100, `unzstd op: makes the output, view shows it (${row})`);
+        await api.addFiles([{ path: 'picture.zst', file: new File([await fx2('picture.zst')], 'picture.zst') }]);
+        check(root.querySelector('input').value === 'picture.png' && root.textContent.includes('looks like PNG'), 'unzstd op: names the output from the content');
+        await api.addFiles([{ path: 'p.zst', file: new File([await fx2('text-pipe.zst')], 'p.zst') }]);
+        check(root.textContent.includes('size not stored'), 'unzstd op: no content size (from a pipe)');
+        await api.addFiles([{ path: 'cut.zst', file: new File([await fx2('cut.zst')], 'cut.zst') }]);
+        check(root.textContent.includes('zstd file is cut off') && root.querySelector('button.primary').disabled, 'unzstd op: rejects a cut-off file');
+        await api.addFiles([{ path: 'dict.zst', file: new File([await fx2('dict.zst')], 'dict.zst') }]);
+        check(root.textContent.includes('needs a dictionary') && root.querySelector('button.primary').disabled, 'unzstd op: rejects a dictionary file');
+      }
       if (op.id === 'untar') {
         const file = new File([await fx2('python.tar.xz')], 'python.tar.xz');
         await api.addFiles([{ path: file.name, file }]);
         for (let i = 0; i < 50 && !root.querySelector('tbody tr'); i++) await sleep(100);
         check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('xz-compressed'),
           'untar op: lists a .tar.xz');
+      }
+      if (op.id === 'untar' && manifest.zstds.length) {
+        const file = new File([await fx2('python.tar.zst')], 'python.tar.zst');
+        await api.addFiles([{ path: file.name, file }]);
+        for (let i = 0; i < 50 && !root.textContent.includes('zstd-compressed'); i++) await sleep(100);
+        check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('zstd-compressed'),
+          'untar op: lists a .tar.zst');
       }
       if (op.id === 'unbase64') {
         const file = new File([await fx2('pixel.txt')], 'pixel.txt');

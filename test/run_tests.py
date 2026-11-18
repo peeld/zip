@@ -121,8 +121,10 @@ def make_fixtures(work: Path) -> dict:
     make_wasm(work)
     has_brotli = make_brotli_fixtures(work, png)
     xzs = make_xz_fixtures(work, src, text, png)
+    zstds = make_zstd_fixtures(work, src, text, png)
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
-                                                    "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs}))
+                                                    "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
+                                                    "zstds": zstds}))
     return {"zips": zips}
 
 
@@ -390,6 +392,10 @@ def make_ar_fixtures(work: Path, src: Path) -> list:
         # The usual kind: data.tar.xz (dpkg-deb's default on Debian/Ubuntu). Read by untar via lib/xz.js.
         subprocess.run(["dpkg-deb", "-Zxz", "--root-owner-group", "--build", str(pkg), str(work / "pkg-xz.deb")],
                        check=True, capture_output=True)
+        # data.tar.zst (Ubuntu's default since 21.10), if this dpkg-deb can write it.
+        if "zstd" in subprocess.run(["dpkg-deb", "--help"], capture_output=True, text=True).stdout:
+            subprocess.run(["dpkg-deb", "-Zzstd", "--root-owner-group", "--build", str(pkg), str(work / "pkg-zstd.deb")],
+                           check=True, capture_output=True)
     return ars
 
 
@@ -597,6 +603,70 @@ def make_xz_fixtures(work: Path, src: Path, text: bytes, png: bytes) -> list:
     (work / "junk.xz").write_bytes(good + b"junk")
     (work / "arm.xz").write_bytes(lzma.compress(small, filters=[{"id": lzma.FILTER_ARM}, {"id": lzma.FILTER_LZMA2}]))
     return xzs
+
+
+def make_zstd_fixtures(work: Path, src: Path, text: bytes, png: bytes) -> list:
+    """.zst files from the zstd tool (none without it: the zstd tests are then skipped).
+    Each entry: { file, want (fixture with the expected output), size (content size from the headers, or null) }."""
+    if not shutil.which("zstd"):
+        return []
+    inp = work / "zstd-in.bin"
+    def z(args, data: bytes, pipe=False) -> bytes:
+        """zstd output. From a file the frame stores the content size; from a pipe it doesn't."""
+        if pipe:
+            return subprocess.run(["zstd", "-q", "-c", *args], input=data, capture_output=True, check=True).stdout
+        inp.write_bytes(data)
+        return subprocess.run(["zstd", "-q", "-c", *args, str(inp)], capture_output=True, check=True).stdout
+    zstds = []
+    def add(name, data: bytes, want: str, raw: bytes, size=True):
+        (work / name).write_bytes(data)
+        if not (work / want).exists():
+            (work / want).write_bytes(raw)
+        zstds.append({"file": name, "want": want, "size": len(raw) if size else None})
+    part = text[:3 << 20]
+    add("text.zst", z([], text), "bgzf-like.txt", text)  # level 3, 8 MB
+    for name, args in (("text-1.zst", ["-1"]), ("text-19.zst", ["-19"]), ("text-22.zst", ["--ultra", "-22"]),
+                       ("text-long.zst", ["--long=27"]), ("text-fast.zst", ["--fast=5"]), ("text-nocheck.zst", ["--no-check"]),
+                       # A 128 KB window on 3 MB: the decoder keeps moving its window down.
+                       ("text-wlog17.zst", ["--zstd=wlog=17"])):
+        add(name, z(args, part), "zstd-text.txt", part)
+    add("text-pipe.zst", z([], part, pipe=True), "zstd-text.txt", part, size=False)
+    add("random.bin.zst", z([], SOURCES["random.bin"]), "src/random.bin", SOURCES["random.bin"])  # raw blocks
+    add("empty.zst", z([], b""), "src/empty.txt", b"")
+    small = text[:100_000]
+    add("small.zst", z([], small), "zstd-small.txt", small)
+    add("picture.zst", z([], png), "png.bin", png)
+    # Two frames end to end (`cat a.zst b.zst`), and skippable frames around one (pzstd starts with one).
+    add("multi.zst", z([], b"part one\n") + z([], b"part two\n"), "zstd-multi.txt", b"part one\npart two\n")
+    skippable = lambda n, data: (0x184D2A50 + n).to_bytes(4, "little") + len(data).to_bytes(4, "little") + data
+    add("skip.zst", skippable(0, b"pzstd!") + z([], small) + skippable(15, b""), "zstd-small.txt", small)
+    # Frames of every length near the checksum's 32-byte stripes (XXH64's tail paths).
+    lengths = [1, 3, 4, 7, 8, 9, 31, 32, 33, 40, 63, 64, 65, 100, 1000]
+    add("sizes.zst", b"".join(z([], text[:n]) for n in lengths), "zstd-sizes.txt", b"".join(text[:n] for n in lengths))
+    # Archives inside zstd, for untar / uncpio.
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        for n in SOURCES:
+            t.add(src / n, n)
+    (work / "python.tar.zst").write_bytes(z([], tar.getvalue()))
+    if (work / "newc.cpio").exists():
+        (work / "newc.cpio.zst").write_bytes(z([], (work / "newc.cpio").read_bytes()))
+    # Damaged: a flipped byte, cut off, a wrong checksum, junk after the end; and unsupported:
+    # a dictionary (id 7; one raw block "abc") and a 2 GB window.
+    good = z(["-19"], small)
+    bad = bytearray(good)
+    bad[len(bad) // 2] ^= 0x55
+    (work / "corrupt.zst").write_bytes(bad)
+    (work / "cut.zst").write_bytes(good[: len(good) // 2])
+    badcheck = bytearray(good)
+    badcheck[-1] ^= 1
+    (work / "badcheck.zst").write_bytes(badcheck)
+    (work / "junk.zst").write_bytes(good + b"junk")
+    magic = bytes.fromhex("28b52ffd")
+    (work / "dict.zst").write_bytes(magic + bytes([0x21, 7, 3, 0x19, 0, 0]) + b"abc")
+    (work / "bigwindow.zst").write_bytes(magic + bytes([0x00, 21 << 3, 0x19, 0, 0]) + b"abc")
+    inp.unlink()
+    return zstds
 
 
 def make_brotli_fixtures(work: Path, png: bytes) -> bool:

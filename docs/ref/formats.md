@@ -131,7 +131,7 @@ doesn't check the CRC.
   Fine for packages and source tarballs. A 1 GB image would take a minute
   (see the TODO for a Web Worker / speed-up).
 - `.tar.xz` and `.cpio.xz` go through `lib/decompress.js`: `compression(blob)`
-  says `'gzip'` / `'xz'` / null and `decompress(blob, kind)` gives the
+  says `'gzip'` / `'xz'` / `'zstd'` / null and `decompress(blob, kind)` gives the
   stream. `readTar` / `readCpio` return that kind as `compressed` (it was a
   boolean; `true` still means gzip). `xz.js` is imported only when an xz is
   actually opened. A .deb's `data.tar.xz` (dpkg-deb's default) now opens in
@@ -143,6 +143,45 @@ doesn't check the CRC.
   and delta filters, two streams with padding, 5 blocks, `.lzma` with and
   without a size, `.tar.xz`, `.cpio.xz`, `dpkg-deb -Zxz`. Damaged copies:
   a flipped byte, cut off, a wrong CRC64, junk after the end, an ARM filter.
+
+## zstd (`lib/zstd.js`)
+- Our own decoder, decode only, written from RFC 8878 (~700 lines with the
+  checksum). Not vendored: Firefox 153 has no native `'zstd'`
+  `DecompressionStream`, and the JS ports found are either Node-flavoured or
+  wasm; this one tests like the other formats.
+- **Frames:** several end to end (`cat a.zst b.zst`), skippable frames
+  skipped (pzstd starts with one; `compression()` and `sniffType` know its
+  magic), junk after the last frame is an error (like `zstd -d`). Frames
+  that need a dictionary are refused by id. The window is the frame's
+  (8 MB for `-19`, 128 MB for `--long=27`); over 1 GB is refused (zstd
+  itself stops at 128 MB without `--memory`). The output buffer grows as
+  needed up to the window plus up to 16 MB, then the window is moved down.
+- **Blocks:** raw, RLE and compressed. Literals raw / RLE / Huffman (1 or 4
+  streams, the tree reused by "treeless" blocks). Sequences with predefined,
+  RLE, FSE and repeat tables, and the three repeat offsets.
+- **Checks:** the XXH64 content checksum (`xxh64()`, 64-bit maths on two
+  32-bit halves; ~300 MB/s in Node) and the frame's content size, both
+  verified. Bitstreams must end exactly where they should. Fuzzed with bit
+  flips against `zstd -d` 1.4.8: never a different output, and in a few
+  cases where zstd accepts a damaged Huffman stream we report it corrupt.
+- **Info without decompressing:** `zstdInfo(blob)` walks the frame and
+  block headers (one small `Blob.slice` per 128 KB block): frames, content
+  size (null if any frame lacks it, as with `zstd` reading a pipe),
+  checksum, window.
+- **Speed:** ~35 MB/s of output in headless Firefox (text, with checksum),
+  ~70 MB/s in Node; the sequence loop has its bit reader written out inline,
+  which doubled it.
+- `.tar.zst` / `.cpio.zst` go through `lib/decompress.js` (`'zstd'`), so
+  untar and uncpio open them, and a .deb's `data.tar.zst` (Ubuntu's default)
+  opens in untar. `zstd.js` is imported only when a zstd is opened.
+- Output name: `.zst` / `.zstd` stripped, `.tzst` -> `.tar`, a name with no
+  other extension gets one from the content.
+- Tests: the `zstd` tool makes the fixtures (skipped without it): levels
+  --fast=5, 1, 3, 19, --ultra -22, --long=27, --no-check, a 128 KB window,
+  a pipe (no size), raw blocks, empty, two frames, skippable frames, 15
+  short frames (XXH64 tails), `.tar.zst`, `.cpio.zst`, `dpkg-deb -Zzstd`.
+  Damaged copies: a flipped byte, cut off, a wrong checksum, junk after the
+  end; a dictionary frame and a 2 GB window by hand.
 
 ## base64 (`lib/base64.js`)
 - Encoder: standard alphabet, 76-column lines plus a final newline, byte for
@@ -284,7 +323,7 @@ doesn't check the CRC.
 - .deb: an ar of `debian-binary`, `control.tar.*`, `data.tar.*`. dpkg reads
   GNU-style names (tested with `dpkg-deb`), so `ar` can repack one if the
   files are listed in that order. unar opens any .deb; untar opens its
-  `data.tar.gz` (xz and zstd need decoders we don't have yet).
+  `data.tar.gz`, `data.tar.xz` or `data.tar.zst`.
 - Error messages: `not an ar archive`, `corrupt ar header at byte N`,
   `ar archive is cut off`, `bad long name reference at byte N`.
 
@@ -349,7 +388,7 @@ doesn't check the CRC.
 webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, deb, a (ar), cpio, wasm, mp3,
 ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
-`tar.gz` / `cpio.gz` (or `tar.xz` / `cpio.xz`) for a gzip (or xz) whose first decompressed
+`tar.gz` / `cpio.gz` (or `.xz`, `.zst`) for a gzip (or xz, zstd) whose first decompressed
 bytes are a tar / cpio header, `lzma` for a legacy .lzma header (see xz above), `uu`
 for text starting with a uuencode `begin` line, or `hex` for an xxd /
 hexdump -C dump. Used by
