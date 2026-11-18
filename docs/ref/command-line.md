@@ -68,7 +68,7 @@ get files while they're the running command. `pickOp` tests in
 Routing by content: when exactly one file is dropped, the shell runs
 `lib/magic.js` `sniffFile` on it (magic.js is imported on the first drop, not
 with the page) and passes the type to `pickOp`. An op whose `input.sniff`
-lists types (`unzip`: zip; `untar`: tar, tar.gz, tar.xz, tar.zst; `unar`: a, deb; `uncpio`: cpio, cpio.gz, cpio.xz, cpio.zst;
+lists types (`unzip`: zip; `untar`: tar, tar.gz, tar.xz, tar.zst; `unar`: a, deb; `uncpio`: cpio, cpio.gz, cpio.xz, cpio.zst; `un7z`: 7z;
 `gunzip`: gz, tar.gz, cpio.gz; `unxz`: xz, tar.xz, cpio.xz, lzma; `unzstd`: zst, tar.zst, cpio.zst; `uudecode`: uu; `unhex`: hex) goes by
 the content when it's recognised, and by the name (`accept`) only when it
 isn't. So `backup.dat` holding a tar.gz opens in untar, a `.tar.gz` that's

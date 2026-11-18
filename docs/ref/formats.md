@@ -114,7 +114,8 @@ doesn't check the CRC.
 - **Checks:** none, CRC32 (`lib/crc32.js`), CRC64 (`crc64()`, table-based with
   two 32-bit halves) and SHA-256 (`lib/hash.js`), all verified. An unknown
   check id is skipped (its size comes from the spec's table).
-- **Filters:** LZMA2 plus delta and x86 BCJ (port of xz's `simple/x86.c`).
+- **Filters:** LZMA2 plus delta and x86 BCJ (port of xz's `simple/x86.c`;
+  both in `lib/filters.js`, shared with 7z).
   ARM, ARM64, ARM-Thumb, PowerPC, IA-64, SPARC and RISC-V are refused by
   name ("the xz ARM filter isn't supported yet").
 - **Memory:** the dictionary is the filter's size (8 MB for `xz -6`, 64 MB
@@ -182,6 +183,38 @@ doesn't check the CRC.
   short frames (XXH64 tails), `.tar.zst`, `.cpio.zst`, `dpkg-deb -Zzstd`.
   Damaged copies: a flipped byte, cut off, a wrong checksum, junk after the
   end; a dictionary frame and a 2 GB window by hand.
+
+## 7z (`lib/7z.js`, `lib/filters.js`)
+- Our own reader, from 7-Zip's `7zFormat.txt`, on `lib/lzma.js`. The
+  32-byte start header gives the place of the header at the end; listing
+  reads only that. The header is usually itself compressed (an "encoded
+  header": a small folder, decoded first). Start header, header and file
+  CRC32s are all checked.
+- **Folders:** one compressed stream each, holding one file or many (a solid
+  archive: 7-Zip's default). Reading one file decodes its folder from the
+  start up to it, like a .tar.gz; `sevenZipWalk` decodes each folder once
+  for "extract all". Coders are a chain of simple (one in, one out) coders:
+  LZMA (`lzmaRaw`, the size comes from the folder), LZMA2, Deflate (native
+  `deflate-raw`), Copy, zstd (the 7-Zip-zstd fork), behind the x86 BCJ
+  and Delta filters, which moved from `lib/xz.js` to `lib/filters.js`.
+- **Refused by name** (the archive still lists; the status line says which
+  method): AES ("encrypted (it needs a password)"; encrypted names fail at
+  listing), BCJ2, PPMd, BZip2, Deflate64, the non-x86 BCJ filters.
+- **Entries:** names are UTF-16; `\` becomes `/` (Windows-made archives).
+  Empty-stream entries are folders unless marked as empty files; anti items
+  (deletion markers) are left out. A symlink (p7zip / libarchive store the
+  Unix mode in the attributes' high 16 bits) has its target as data: it's
+  read at listing when it's within the first 4 MB of its folder, otherwise
+  it shows as `?`. Links aren't extracted, like tar's.
+- Not read: split archives (.7z.001: "cut off (or is one part of a split
+  .7z.001 archive)"), external / additional streams, ctime / atime.
+- Tests: libarchive through `ctypes` (LZMA, LZMA2, Deflate, store, BZip2 to
+  be refused), a hand-built archive (`hand7z` in `run_tests.py`: BCJ +
+  LZMA2 and Delta + LZMA1 from liblzma's raw encoder, three folders, an
+  empty file), damaged copies (data, header CRC, cut off), AES and PPMd
+  coders, and an empty archive. With the 7-Zip command line installed (CI:
+  p7zip-full) also its defaults, -mx=9, non-solid with a plain header,
+  LZMA, BCJ, Delta, Deflate, Copy, PPMd and AES (data, and names with -mhe).
 
 ## base64 (`lib/base64.js`)
 - Encoder: standard alphabet, 76-column lines plus a final newline, byte for

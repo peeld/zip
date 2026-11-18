@@ -1,10 +1,11 @@
 // LZMA decoder (LZMA1 and LZMA2), written from the format as xz-embedded and
 // the LZMA SDK describe it. Decode only. No DOM. Used by lib/xz.js (.xz and
-// legacy .lzma files) and meant for a later 7z reader.
+// legacy .lzma files) and lib/7z.js.
 //
 //   LzmaDecoder   the range decoder + LZMA state + dictionary (history window)
 //   lzma2Chunks   async iterator: an LZMA2 stream (one xz block's data) -> output chunks
 //   lzmaAlone     async iterator: a legacy .lzma file -> output chunks
+//   lzmaRaw       async iterator: raw LZMA1 data, properties given (7z) -> output chunks
 //
 // Sources are lib/source.js readers ({ pos, read(n) }).
 
@@ -350,6 +351,14 @@ const BATCH = 1 << 21;  // hand out output every 2 MB
  */
 export async function* lzmaAlone(src, { cutOff }) {
   const { props, dictSize, size } = parseAloneHeader(await exact(src, 13, cutOff));
+  yield* lzmaRaw(src, { props, dictSize, size, cutOff });
+}
+
+/**
+ * Decode raw LZMA1 data (no header: 7z gives the properties and size
+ * separately). Ends at `size`, or at the end marker when size is null.
+ */
+export async function* lzmaRaw(src, { props, dictSize, size, cutOff }) {
   const dec = new LzmaDecoder(size === null ? dictSize : Math.min(dictSize, size));
   dec.setProps(props);
   dec.resetState();

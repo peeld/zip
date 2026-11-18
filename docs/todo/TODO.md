@@ -18,7 +18,7 @@
 - [ ] Optional: `<link rel="modulepreload">` an op's files when Tab completion settles on its command.
 
 ## New ops
-- [ ] More archive / compression / encoding commands (next: un7z … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
+- [ ] More archive / compression / encoding commands (next: bunzip2 … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
 
 ## Later
 - [ ] Command line follow-ups: arguments, `help` completion, per-op aliases, saved history. See [commands.md](commands.md).

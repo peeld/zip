@@ -32,6 +32,8 @@ export const OPS = [
     input: { accept: '.a,.ar,.deb,application/x-archive,application/vnd.debian.binary-package', sniff: ['a', 'deb'] } },
   { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz, .cpio.xz or .cpio.zst (initramfs) and extract them.',
     input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,.cpio.zst,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz', 'cpio.zst'] } },
+  { id: 'un7z', group: 'archive', title: 'Open a 7z archive', description: 'View the files in a .7z archive and extract them.',
+    input: { accept: '.7z,application/x-7z-compressed', sniff: ['7z'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
     input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
   { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.',

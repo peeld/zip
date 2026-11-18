@@ -5,8 +5,10 @@ Built so far: `gzip` / `gunzip`, `base64` / `unbase64`, `tar` / `untar`,
 `hash`, `encode` / `decode` (base32, base32hex, ascii85, quoted-printable,
 URL), `brotli` / `unbrotli` (native), `unxz` (.xz, .lzma; also .tar.xz /
 .cpio.xz in untar / uncpio) and `unzstd` (.zst; also .tar.zst / .cpio.zst
-and a .deb's `data.tar.zst`). Tier 1 is done except zlib (low demand). Next
-up in Tier 2: **`un7z`** on `lib/lzma.js`. How the built ones behave, and the decisions they settled:
+and a .deb's `data.tar.zst`), `un7z` (.7z: LZMA, LZMA2, Deflate, Copy,
+zstd, with BCJ x86 / Delta). Tier 1 is done except zlib (low demand). Next
+up in Tier 2: **`bunzip2`** (.tar.bz2 is still common, and it would also
+open 7z's BZip2 method). How the built ones behave, and the decisions they settled:
 [../ref/formats.md](../ref/formats.md).
 
 The site has no build step and stays light. Small third-party libraries are
@@ -88,6 +90,17 @@ and add their content type to the registry `sniff` list (see
 - [ ] unzstd: speed (~35 MB/s in Firefox). Most time is the sequence loop;
   the literal / match copies are byte loops below 16 / 32 bytes. A Web
   Worker would keep the page responsive (TODO.md).
+- [ ] un7z: AES (`-p`): AES-256-CBC with a SHA-256 key from the password
+  (2^19 rounds; `crypto.subtle` has both). Needs a password prompt in the
+  UI, the same one zip encryption would use. Encrypted names (`-mhe`) too.
+- [ ] un7z: BCJ2 (7-Zip's default for .exe / .dll with -mx>=5; four input
+  streams, so the folder graph needs more than a chain), the ARM64 / ARM /
+  PPC / SPARC / IA-64 / RISC-V filters (shared with the unxz item), PPMd
+  (PPMd7 / variant H, ~800 lines), Deflate64.
+- [ ] un7z: split archives (.7z.001, .002, …): drop all the parts and
+  read them as one Blob (`new Blob(parts)`).
+- [ ] un7z: CTime / ATime and Windows attributes (hidden, read-only) are
+  read past, not shown.
 - [ ] unzstd: dictionaries (`zstd -D`). Rare in files; would need a way to
   give the dictionary (drop two files?).
 - [ ] unbase64: skip PEM `-----BEGIN …` / `-----END …` lines instead of
@@ -105,8 +118,7 @@ Only zlib is left (or fold it into gzip).
 
 | Command | Format | Work | Notes |
 |---|---|---|---|
-| (in `gunzip`/`untar`) `bunzip2` | .bz2, .tar.bz2 | ~400 lines | Decode only (Huffman + inverse BWT). Encode is harder. Leave it out. |
-| `un7z` | .7z | med | **Next.** Container parsing + LZMA/LZMA2 (`lib/lzma.js` is ready: `lzma2Chunks`, `LzmaDecoder`) + store, plus the BCJ x86 filter (in `lib/xz.js`; move it out to share). No AES and no PPMd at first. The header itself is often LZMA-compressed. |
+| `bunzip2` (also in `untar`) | .bz2, .tar.bz2 | ~400 lines | **Next.** Decode only (Huffman + inverse BWT); no encoder. Add it to `lib/decompress.js` for untar / uncpio, and to un7z (method `040202`). |
 | `lz4` / `unlz4` | .lz4 frame | small–med | Both directions are simple. Low demand. |
 | `uniso` | .iso (ISO 9660 + Joliet) | med | Random access via `Blob.slice`, like zip. No UDF at first. |
 | zip: encryption | ZipCrypto, WinZip AES | med | Fits in the existing `unzip`. AES-CTR, PBKDF2 and HMAC-SHA1 are all in `crypto.subtle`. Needs a password prompt in the UI. |

@@ -122,9 +122,10 @@ def make_fixtures(work: Path) -> dict:
     has_brotli = make_brotli_fixtures(work, png)
     xzs = make_xz_fixtures(work, src, text, png)
     zstds = make_zstd_fixtures(work, src, text, png)
+    sevenzips = make_7z_fixtures(work, src)
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
                                                     "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
-                                                    "zstds": zstds}))
+                                                    "zstds": zstds, "sevenzips": sevenzips}))
     return {"zips": zips}
 
 
@@ -667,6 +668,178 @@ def make_zstd_fixtures(work: Path, src: Path, text: bytes, png: bytes) -> list:
     (work / "bigwindow.zst").write_bytes(magic + bytes([0x00, 21 << 3, 0x19, 0, 0]) + b"abc")
     inp.unlink()
     return zstds
+
+
+def n7(v: int) -> bytes:
+    """A 7z variable-length number: i leading 1 bits in the first byte = i more bytes (little-endian)."""
+    for i in range(9):
+        if i == 8 or v < 1 << (7 * (i + 1)):
+            first = (0xFF << (8 - i)) & 0xFF if i < 8 else 0xFF
+            high = v >> (8 * i) if i < 8 else 0
+            return bytes([first | high]) + v.to_bytes(8, "little")[:i]
+
+
+def bits7(flags: list) -> bytes:
+    """A 7z bit vector, highest bit first."""
+    out = bytearray((len(flags) + 7) // 8)
+    for i, f in enumerate(flags):
+        if f:
+            out[i // 8] |= 0x80 >> (i % 8)
+    return bytes(out)
+
+
+def hand7z(folders: list, empties=(), header_crc_ok=True) -> bytes:
+    """A 7z built by hand, for coder chains libarchive can't write. folders: [{ coders: [(id, props)] (coder 0 is
+    the outermost; coder i reads coder i+1's output), sizes: [each coder's output size], pack, files: [(name, data)] }].
+    empties: names of empty files. Header not compressed."""
+    packs = b"".join(f["pack"] for f in folders)
+    h = bytearray([0x01, 0x04, 0x06]) + n7(0) + n7(len(folders)) + b"\x09" + b"".join(n7(len(f["pack"])) for f in folders) + b"\x00"
+    h += b"\x07\x0b" + n7(len(folders)) + b"\x00"
+    for f in folders:
+        h += n7(len(f["coders"]))
+        for cid, props in f["coders"]:
+            h += bytes([len(cid) | (0x20 if props else 0)]) + cid + (n7(len(props)) + props if props else b"")
+        for i in range(len(f["coders"]) - 1):
+            h += n7(i) + n7(i + 1)  # coder i's input <- coder i+1's output
+    h += b"\x0c" + b"".join(n7(x) for f in folders for x in f["sizes"])
+    h += b"\x00\x08\x0d" + b"".join(n7(len(f["files"])) for f in folders)
+    h += b"\x09" + b"".join(n7(len(d)) for f in folders for _, d in f["files"][:-1])
+    h += b"\x0a\x01" + b"".join(zlib.crc32(d).to_bytes(4, "little") for f in folders for _, d in f["files"])
+    h += b"\x00\x00"
+    names = [n for f in folders for n, _ in f["files"]] + list(empties)
+    h += b"\x05" + n7(len(names))
+    if empties:
+        flags = [False] * (len(names) - len(empties)) + [True] * len(empties)
+        h += b"\x0e" + n7(len(bits7(flags))) + bits7(flags)
+        h += b"\x0f" + n7(len(bits7([True] * len(empties)))) + bits7([True] * len(empties))
+    utf16 = b"\x00" + b"".join(n.encode("utf-16-le") + b"\x00\x00" for n in names)
+    h += b"\x11" + n7(len(utf16)) + utf16 + b"\x00\x00"
+    tail = len(packs).to_bytes(8, "little") + len(h).to_bytes(8, "little") + (zlib.crc32(h) ^ (0 if header_crc_ok else 1)).to_bytes(4, "little")
+    return b"7z\xbc\xaf\x27\x1c\x00\x04" + zlib.crc32(tail).to_bytes(4, "little") + tail + packs + bytes(h)
+
+
+def libarchive_7z(path: Path, items: list, compression: str) -> bool:
+    """Write a .7z with libarchive (through ctypes; it's often installed without bsdtar). items: [(name, bytes |
+    None for a folder | ('link', target))]. False if libarchive isn't there."""
+    import ctypes
+    import ctypes.util
+    try:
+        la = ctypes.CDLL(ctypes.util.find_library("archive") or "libarchive.so.13")
+    except OSError:
+        return False
+    vp, cp = ctypes.c_void_p, ctypes.c_char_p
+    la.archive_write_new.restype = vp
+    la.archive_entry_new.restype = vp
+    la.archive_error_string.restype = cp
+    for name, args in (("archive_write_set_format_7zip", [vp]), ("archive_write_set_options", [vp, cp]),
+                       ("archive_write_open_filename", [vp, cp]), ("archive_write_header", [vp, vp]),
+                       ("archive_write_data", [vp, cp, ctypes.c_size_t]), ("archive_write_close", [vp]),
+                       ("archive_write_free", [vp]), ("archive_error_string", [vp]),
+                       ("archive_entry_set_pathname_utf8", [vp, cp]), ("archive_entry_set_symlink_utf8", [vp, cp]),
+                       ("archive_entry_set_size", [vp, ctypes.c_int64]), ("archive_entry_set_filetype", [vp, ctypes.c_uint]),
+                       ("archive_entry_set_perm", [vp, ctypes.c_uint]), ("archive_entry_set_mtime", [vp, ctypes.c_int64, ctypes.c_long]),
+                       ("archive_entry_free", [vp])):
+        getattr(la, name).argtypes = args
+    la.archive_write_data.restype = ctypes.c_ssize_t
+    a = la.archive_write_new()
+    try:
+        if la.archive_write_set_format_7zip(a) or la.archive_write_set_options(a, f"compression={compression}".encode()):
+            return False
+        assert la.archive_write_open_filename(a, str(path).encode()) == 0, la.archive_error_string(a)
+        for name, data in items:
+            e = la.archive_entry_new()
+            la.archive_entry_set_pathname_utf8(e, name.encode())
+            la.archive_entry_set_mtime(e, 1715000000, 0)
+            if data is None:
+                la.archive_entry_set_filetype(e, 0o040000)
+                la.archive_entry_set_perm(e, 0o755)
+            elif isinstance(data, tuple):
+                la.archive_entry_set_filetype(e, 0o120000)
+                la.archive_entry_set_perm(e, 0o777)
+                la.archive_entry_set_symlink_utf8(e, data[1].encode())
+            else:
+                la.archive_entry_set_filetype(e, 0o100000)
+                la.archive_entry_set_perm(e, 0o644)
+                la.archive_entry_set_size(e, len(data))
+            assert la.archive_write_header(a, e) == 0, la.archive_error_string(a)
+            if isinstance(data, bytes) and data:
+                assert la.archive_write_data(a, data, len(data)) == len(data)
+            la.archive_entry_free(e)
+        assert la.archive_write_close(a) == 0, la.archive_error_string(a)
+    finally:
+        la.archive_write_free(a)
+    return True
+
+
+def find_7z():
+    """The 7-Zip command line (7zz is 7-Zip's own Linux build; 7z / 7za are p7zip), or None."""
+    return next((t for t in ("7zz", "7z", "7za") if shutil.which(t)), None)
+
+
+def make_7z_fixtures(work: Path, src: Path) -> list:
+    """.7z files from libarchive, from hand7z (coder chains), and from the 7-Zip command line if installed.
+    Each entry: { file, files: { name: fixture with its content }, links: { name: target }, dirs: [names],
+    problem (start of the message for an unsupported method, or null) }."""
+    out = []
+    names = list(SOURCES)
+    files = {n: f"src/{n}" for n in names}
+    # libarchive: a folder, a symlink, every file; one solid folder (store: one folder per file).
+    items = [(n, SOURCES[n]) for n in names] + [("dir", None), ("link-to-hello", ("link", "hello.txt"))]
+    for c, problem in (("lzma2", None), ("lzma1", None), ("deflate", None), ("store", None), ("bzip2", "the 7z BZip2 method")):
+        if libarchive_7z(work / f"la-{c}.7z", items, c):
+            # A symlink's target is its data: it can't be read when the method isn't supported (it lists as "?").
+            links = {"link-to-hello": "?" if problem else "hello.txt"}
+            out.append({"file": f"la-{c}.7z", "files": files, "links": links, "dirs": ["dir"], "problem": problem})
+    # By hand: BCJ x86 + LZMA2, Delta + LZMA1 (raw streams from liblzma), two folders, an empty file.
+    code = bytes(random.Random(8).choice([0xe8, 0xe9, 0x00, 0xff, 0x48, 0x89, 0x8b, 0xc3]) for _ in range(200_000))
+    (work / "code.bin").write_bytes(code)
+    samples = b"".join(int(1000 + 800 * __import__("math").sin(i / 50)).to_bytes(4, "little") for i in range(50_000))
+    (work / "samples.bin").write_bytes(samples)
+    bcj = lzma.compress(code, format=lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_X86}, {"id": lzma.FILTER_LZMA2, "dict_size": 1 << 20}])
+    lz1 = {"id": lzma.FILTER_LZMA1, "dict_size": 1 << 20, "lc": 3, "lp": 0, "pb": 2}
+    delta = lzma.compress(samples, format=lzma.FORMAT_RAW, filters=[{"id": lzma.FILTER_DELTA, "dist": 4}, lz1])
+    hello, nested = SOURCES["hello.txt"], SOURCES["dir/sub/nested.csv"]
+    two = lzma.compress(hello + nested, format=lzma.FORMAT_RAW, filters=[lz1])
+    lzma_props = bytes([93]) + (1 << 20).to_bytes(4, "little")  # lc 3, lp 0, pb 2; 1 MB dictionary
+    folders = [
+        {"coders": [(b"\x03\x03\x01\x03", b""), (b"\x21", bytes([16]))], "sizes": [len(code), len(code)], "pack": bcj,
+         "files": [("bin/code.bin", code)]},
+        {"coders": [(b"\x03", bytes([3])), (b"\x03\x01\x01", lzma_props)], "sizes": [len(samples), len(samples)], "pack": delta,
+         "files": [("samples.bin", samples)]},
+        {"coders": [(b"\x03\x01\x01", lzma_props)], "sizes": [len(hello) + len(nested)], "pack": two,
+         "files": [("hello.txt", hello), ("dir/sub/nested.csv", nested)]},
+    ]
+    (work / "hand.7z").write_bytes(hand7z(folders, empties=["empty.txt"]))
+    out.append({"file": "hand.7z", "files": {"bin/code.bin": "code.bin", "samples.bin": "samples.bin", "hello.txt": "src/hello.txt",
+                "dir/sub/nested.csv": "src/dir/sub/nested.csv", "empty.txt": "src/empty.txt"}, "links": {}, "dirs": [], "problem": None})
+    # Damaged and unsupported, by hand.
+    plain = [{"coders": [(b"\x00", b"")], "sizes": [len(hello)], "pack": hello, "files": [("hello.txt", hello)]}]
+    good = hand7z(plain)
+    (work / "badcrc.7z").write_bytes(good[:40] + bytes([good[40] ^ 1]) + good[41:])  # a byte of hello.txt's data
+    (work / "badheader.7z").write_bytes(hand7z(plain, header_crc_ok=False))
+    (work / "cut.7z").write_bytes(good[:-10])
+    (work / "aes.7z").write_bytes(hand7z([dict(plain[0], coders=[(b"\x06\xf1\x07\x01", b"\x00")])]))
+    (work / "ppmd.7z").write_bytes(hand7z([dict(plain[0], coders=[(b"\x03\x04\x01", b"\x06\x00\x00\x10\x00")])]))
+    (work / "empty.7z").write_bytes(b"7z\xbc\xaf\x27\x1c\x00\x04" + zlib.crc32(bytes(20)).to_bytes(4, "little") + bytes(20))
+    # The 7-Zip command line (CI installs p7zip-full): its defaults and the methods and filters people use.
+    tool = find_7z()
+    if tool:
+        def sz(name, *args, problem=None, password=False):
+            subprocess.run([tool, "a", "-t7z", "-bd", "-y", *args, str(work / name), "."], cwd=src, check=True, capture_output=True)
+            out.append({"file": name, "files": files, "links": {}, "dirs": ["dir", "dir/sub"], "problem": problem})
+        sz("cli.7z")  # LZMA2, solid, compressed header
+        sz("cli-mx9.7z", "-mx=9")
+        sz("cli-nonsolid.7z", "-ms=off", "-mhc=off")  # a folder per file, plain header
+        sz("cli-lzma.7z", "-m0=LZMA")
+        sz("cli-bcj.7z", "-m0=BCJ", "-m1=LZMA2")
+        sz("cli-delta.7z", "-m0=Delta:4", "-m1=LZMA")
+        sz("cli-deflate.7z", "-m0=Deflate")
+        sz("cli-copy.7z", "-m0=Copy")
+        sz("cli-ppmd.7z", "-m0=PPMd", problem="the 7z PPMd method")
+        sz("cli-aes.7z", "-psecret", problem="this 7z is encrypted")
+        subprocess.run([tool, "a", "-t7z", "-bd", "-y", "-psecret", "-mhe=on", str(work / "cli-aes-names.7z"), "."],
+                       cwd=src, check=True, capture_output=True)
+    return out
 
 
 def make_brotli_fixtures(work: Path, png: bytes) -> bool:

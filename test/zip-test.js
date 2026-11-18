@@ -17,6 +17,7 @@ import { brotli, unbrotli, canBrotli, canUnbrotli } from '../public/lib/brotli.j
 import { unxz, xzInfo, crc64, unxzName, isXz, lzmaInfo } from '../public/lib/xz.js';
 import { isLzmaAlone } from '../public/lib/lzma.js';
 import { unzstd, zstdInfo, unzstdName, isZstd, xxh64 } from '../public/lib/zstd.js';
+import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
@@ -401,6 +402,61 @@ async function run() {
     for (const n of ['text.zst', 'python.tar.zst', 'skip.zst', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
     if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.zst')));
     check(types.join() === 'zst,tar.zst,zst,' + (manifest.cpios.length ? ',cpio.zst' : ''), `sniffFile: zst, tar.zst, cpio.zst (${types.join()})`);
+  }
+
+  // 6l. 7z (lib/7z.js): libarchive, hand-built coder chains and (if installed) the 7-Zip command line.
+  {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    if (!manifest.sevenzips.some((x) => x.file.startsWith('cli'))) skip('7z: no 7-Zip command line (7zz / 7z / 7za), only libarchive and hand-built fixtures');
+    for (const x of manifest.sevenzips) {
+      const blob = await fx2(x.file);
+      const t = performance.now();
+      let a;
+      try { a = await read7z(blob); } catch (e) { check(false, `read7z: ${x.file}: ${e.message}`); continue; }
+      const byName = new Map(a.entries.map((e) => [e.name, e]));
+      const listed = Object.keys(x.files).every((n) => byName.get(n) && !byName.get(n).dir)
+        && x.dirs.every((n) => byName.get(n)?.dir) && Object.entries(x.links).every(([n, to]) => byName.get(n)?.link === to);
+      check(listed, `read7z: ${x.file} lists files, folders and links (${a.methods.join(', ')}${a.solid ? ', solid' : ''})`);
+      if (x.problem) {
+        const m = await err(async () => read(open7zEntry(blob, a, byName.get('hello.txt'))));
+        check(a.problem?.startsWith(x.problem) && m.startsWith(x.problem), `read7z: ${x.file} says what isn't supported (${a.problem})`);
+        continue;
+      }
+      let ok = 0;
+      for (const [n, fx] of Object.entries(x.files)) {
+        const e = byName.get(n);
+        if (e && same(await read(open7zEntry(blob, a, e)), await bytes(await fx2(fx)))) ok++;
+      }
+      let walked = 0;
+      for await (const { entry, stream } of sevenZipWalk(blob, a)) {
+        if (!stream) continue;
+        const got = await read(stream);
+        if (x.files[entry.name] && same(got, await bytes(await fx2(x.files[entry.name])))) walked++;
+      }
+      const n = Object.keys(x.files).length;
+      check(ok === n && walked === n, `un7z: ${x.file}: ${ok}/${n} files open, ${walked}/${n} in one pass (${Math.round(performance.now() - t)} ms)`);
+    }
+    const m = {};
+    for (const n of ['badcrc.7z', 'badheader.7z', 'cut.7z', 'aes.7z', 'ppmd.7z']) {
+      m[n] = await err(async () => { const b = await fx2(n); const a = await read7z(b); await read(open7zEntry(b, a, a.entries[0])); });
+    }
+    check(m['badcrc.7z'] === '7z CRC check failed for hello.txt: the data is corrupt', `un7z: a flipped byte is caught (${m['badcrc.7z']})`);
+    check(m['badheader.7z'] === 'corrupt 7z file: header CRC', `read7z: header CRC (${m['badheader.7z']})`);
+    check(m['cut.7z'].startsWith('7z file is cut off'), `read7z: cut off (${m['cut.7z']})`);
+    check(m['aes.7z'].startsWith('this 7z is encrypted') && m['ppmd.7z'] === "the 7z PPMd method isn't supported yet",
+      `un7z: encryption and PPMd named (${m['aes.7z']} / ${m['ppmd.7z']})`);
+    if (manifest.sevenzips.some((x) => x.file === 'cli.7z')) {
+      const names = await err(async () => read7z(await fx2('cli-aes-names.7z')));
+      check(names.startsWith('this 7z has encrypted file names'), `read7z: encrypted header named (${names})`);
+    }
+    const empty = await read7z(await fx2('empty.7z'));
+    const notSz = await err(async () => read7z(await fx2('src/random.bin')));
+    check(empty.entries.length === 0 && notSz === 'not a 7z archive', `read7z: empty archive; not a 7z (${notSz})`);
+    const hand = await read7z(await fx2('hand.7z'));
+    check(hand.entries.find((e) => e.name === 'empty.txt')?.size === 0 && !hand.entries.find((e) => e.name === 'empty.txt').dir
+      && hand.folders.length === 3 && hand.solid, 'read7z: an empty file, three folders, one of them solid');
+    check(is7z(new Uint8Array(await (await fx2('hand.7z')).slice(0, 6).arrayBuffer())) && await sniffFile(await fx2('hand.7z')) === '7z', 'is7z, sniffFile');
   }
 
   // 6c. base64 / unbase64, checked byte for byte against Python's output.
@@ -1001,6 +1057,7 @@ async function run() {
       && by('a.dat', 'zst') === 'unzstd' && by('a.zst', 'tar.zst') === 'untar' && by('i.img', 'cpio.zst') === 'uncpio'
       && by('a.tar.zst', 'tar.zst', 'unzstd') === 'unzstd',
       'pickOp: .zst -> unzstd, .tar.zst/.tzst or tar inside -> untar, cpio inside -> uncpio, unzstd keeps them while running');
+    check(id([f('a.7z')]) === 'un7z' && id([f('A.7Z')]) === 'un7z' && by('a.dat', '7z') === 'un7z', 'pickOp: .7z or 7z content -> un7z');
     check(id([f('a.css.br')]) === 'unbrotli' && id([f('B.BR')]) === 'unbrotli' && id([jpg], 'brotli') === 'brotli' && id([jpg, jpg], 'brotli') === 'zip',
       'pickOp: .br -> unbrotli (by name: brotli has no magic number), brotli takes one file while running');
     check(id([f('a.b64')]) === 'unbase64' && id([f('a.BASE64')]) === 'unbase64' && id([jpg], 'base64') === 'base64',
@@ -1135,6 +1192,17 @@ async function run() {
         for (let i = 0; i < 50 && !root.textContent.includes('zstd-compressed'); i++) await sleep(100);
         check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('zstd-compressed'),
           'untar op: lists a .tar.zst');
+      }
+      if (op.id === 'un7z') {
+        const file = new File([await fx2('hand.7z')], 'hand.7z');
+        await api.addFiles([{ path: file.name, file }]);
+        for (let i = 0; i < 50 && !root.querySelector('tbody tr'); i++) await sleep(100);
+        check(root.querySelectorAll('tbody tr').length === 5 && root.textContent.includes('BCJ') && root.textContent.includes('solid'),
+          `un7z op: lists a 7z (${root.querySelector('.muted, .status')?.textContent ?? ''})`);
+        const p = new File([await fx2('ppmd.7z')], 'p.7z');
+        await api.addFiles([{ path: p.name, file: p }]);
+        for (let i = 0; i < 50 && !root.textContent.includes('PPMd'); i++) await sleep(100);
+        check(root.textContent.includes("PPMd method isn't supported yet: the files can be listed"), 'un7z op: says what it can\'t extract');
       }
       if (op.id === 'unbase64') {
         const file = new File([await fx2('pixel.txt')], 'pixel.txt');
