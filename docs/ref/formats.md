@@ -7,7 +7,7 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
 ## Shared decisions
 - **Encode and decode are two commands** (`gzip` / `gunzip`, `base64` /
   `unbase64`, `tar` / `untar`, `ar` / `unar`, `cpio` / `uncpio`, `brotli` / `unbrotli`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`), because ops take no arguments yet.
-  Decode-only formats (`unxz`) have no encoder command. Decoders
+  Decode-only formats (`unxz`, `unzstd`, `bunzip2`) have no encoder command. Decoders
   accept specific extensions (and content types, `input.sniff`) and go
   *before* `zip` in the registry; encoders take any file and go after it
   (see [command-line.md](command-line.md), routing). An option an op needs
@@ -184,6 +184,50 @@ doesn't check the CRC.
   Damaged copies: a flipped byte, cut off, a wrong checksum, junk after the
   end; a dictionary frame and a 2 GB window by hand.
 
+## bzip2 (`lib/bzip2.js`)
+- Our own decoder, decode only (~400 lines). There's no spec: written from
+  the format with bzip2 1.0.8's `decompress.c` / `huffman.c` as the
+  reference, and it makes the same checks (code lengths 1-20, 2-6 tables,
+  selectors past 18002 read and ignored, runs capped at 2M, origPtr, a
+  block ending in 4 equal bytes with no count). Huffman tables are built
+  the way `BZ2_hbCreateDecodeTables` builds them, plus a 10-bit lookup
+  table for the short codes.
+- **Bits:** blocks aren't byte-aligned, so one MSB-first bit reader runs over
+  a whole stream. It reads 1 MB at a time and refills between 50-symbol
+  groups. Past the end of the data it reads zeros; any error raised once the
+  bits used go past the end is reported as "cut off" (zeros look like long
+  RUNA runs first).
+- **Checks:** each block's CRC and the stream's combined CRC, CRC-32
+  MSB-first (poly `0x04c11db7`, not the reflected zip one, so not
+  `lib/crc32.js`). Output of a block is passed on before its CRC is checked
+  (as unzstd does with its checksum).
+- **Streams:** several end to end (pbzip2, `cat a.bz2 b.bz2`), with
+  different block sizes. Zero padding after the last is ignored; other junk
+  is an error (`bzip2 -d` warns and goes on; we follow gzip's rule).
+- **Randomised blocks** (bzip2 0.9.0 / 0.9.5 set the bit for very
+  repetitive input; 1.0 never writes it) are refused by name rather than
+  carrying the 512-entry table.
+- Memory: a 4-byte-per-symbol array of the block size (3.6 MB for `-9`),
+  kept across blocks. Output comes out in 256 KB chunks, so a block of runs
+  (up to ~46 MB) never sits in memory at once.
+- **Speed:** ~17 MB/s of output in headless Firefox, ~27 MB/s in Node
+  (bzip2 itself: ~55 MB/s). Most time is the inverse-BWT walk (random
+  reads over the block) and the symbol loop.
+- Fuzzed with single bit flips against `bzip2 -d` 1.0.8 (~1400 cases): the
+  output never differs, and the only file bzip2 accepts that we refuse is
+  one whose flip set the randomised bit.
+- `.tar.bz2` / `.cpio.bz2` go through `lib/decompress.js` (`'bzip2'`), and
+  un7z decodes the BZip2 method (`040202`) with `bunzip2Chunks`.
+  `bzip2.js` is imported only when a bzip2 is opened.
+- Output name: `.bz2` / `.bzip2` / `.bz` stripped, `.tbz` / `.tbz2` / `.tb2`
+  -> `.tar`, a name with no other extension gets one from the content.
+- Tests: the `bzip2` tool makes the fixtures (skipped without it): -9 and
+  -1 (32 blocks), random data, empty, one byte, runs of every length to 300
+  plus a 1 MB zero run, a PNG, two streams, zero padding, `.tar.bz2`,
+  `.cpio.bz2`, and in 7z (libarchive and 7-Zip). Damaged copies: a flipped
+  byte, cut off, block CRC, stream CRC, junk after the end, the randomised
+  bit.
+
 ## 7z (`lib/7z.js`, `lib/filters.js`)
 - Our own reader, from 7-Zip's `7zFormat.txt`, on `lib/lzma.js`. The
   32-byte start header gives the place of the header at the end; listing
@@ -195,11 +239,11 @@ doesn't check the CRC.
   start up to it, like a .tar.gz; `sevenZipWalk` decodes each folder once
   for "extract all". Coders are a chain of simple (one in, one out) coders:
   LZMA (`lzmaRaw`, the size comes from the folder), LZMA2, Deflate (native
-  `deflate-raw`), Copy, zstd (the 7-Zip-zstd fork), behind the x86 BCJ
+  `deflate-raw`), BZip2 (`bunzip2Chunks`), Copy, zstd (the 7-Zip-zstd fork), behind the x86 BCJ
   and Delta filters, which moved from `lib/xz.js` to `lib/filters.js`.
 - **Refused by name** (the archive still lists; the status line says which
   method): AES ("encrypted (it needs a password)"; encrypted names fail at
-  listing), BCJ2, PPMd, BZip2, Deflate64, the non-x86 BCJ filters.
+  listing), BCJ2, PPMd, Deflate64, the non-x86 BCJ filters.
 - **Entries:** names are UTF-16; `\` becomes `/` (Windows-made archives).
   Empty-stream entries are folders unless marked as empty files; anti items
   (deletion markers) are left out. A symlink (p7zip / libarchive store the
@@ -208,13 +252,12 @@ doesn't check the CRC.
   it shows as `?`. Links aren't extracted, like tar's.
 - Not read: split archives (.7z.001: "cut off (or is one part of a split
   .7z.001 archive)"), external / additional streams, ctime / atime.
-- Tests: libarchive through `ctypes` (LZMA, LZMA2, Deflate, store, BZip2 to
-  be refused), a hand-built archive (`hand7z` in `run_tests.py`: BCJ +
+- Tests: libarchive through `ctypes` (LZMA, LZMA2, Deflate, store, BZip2), a hand-built archive (`hand7z` in `run_tests.py`: BCJ +
   LZMA2 and Delta + LZMA1 from liblzma's raw encoder, three folders, an
   empty file), damaged copies (data, header CRC, cut off), AES and PPMd
   coders, and an empty archive. With the 7-Zip command line installed (CI:
   p7zip-full) also its defaults, -mx=9, non-solid with a plain header,
-  LZMA, BCJ, Delta, Deflate, Copy, PPMd and AES (data, and names with -mhe).
+  LZMA, BCJ, Delta, Deflate, Copy, BZip2, PPMd and AES (data, and names with -mhe).
 
 ## base64 (`lib/base64.js`)
 - Encoder: standard alphabet, 76-column lines plus a final newline, byte for
@@ -418,10 +461,10 @@ doesn't check the CRC.
 
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
-webp, pdf, zip, gz, bz2, xz, 7z, rar, zst, tar, deb, a (ar), cpio, wasm, mp3,
+webp, pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, deb, a (ar), cpio, wasm, mp3,
 ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
-`tar.gz` / `cpio.gz` (or `.xz`, `.zst`) for a gzip (or xz, zstd) whose first decompressed
+`tar.gz` / `cpio.gz` (or `.xz`, `.zst`, `.bz2`) for a gzip (or xz, zstd, bzip2) whose first decompressed
 bytes are a tar / cpio header, `lzma` for a legacy .lzma header (see xz above), `uu`
 for text starting with a uuencode `begin` line, or `hex` for an xxd /
 hexdump -C dump. Used by

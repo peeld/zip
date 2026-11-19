@@ -5,10 +5,10 @@ Built so far: `gzip` / `gunzip`, `base64` / `unbase64`, `tar` / `untar`,
 `hash`, `encode` / `decode` (base32, base32hex, ascii85, quoted-printable,
 URL), `brotli` / `unbrotli` (native), `unxz` (.xz, .lzma; also .tar.xz /
 .cpio.xz in untar / uncpio) and `unzstd` (.zst; also .tar.zst / .cpio.zst
-and a .deb's `data.tar.zst`), `un7z` (.7z: LZMA, LZMA2, Deflate, Copy,
-zstd, with BCJ x86 / Delta). Tier 1 is done except zlib (low demand). Next
-up in Tier 2: **`bunzip2`** (.tar.bz2 is still common, and it would also
-open 7z's BZip2 method). How the built ones behave, and the decisions they settled:
+and a .deb's `data.tar.zst`), `bunzip2` (.bz2; also .tar.bz2 / .cpio.bz2),
+`un7z` (.7z: LZMA, LZMA2, Deflate, BZip2, Copy, zstd, with BCJ x86 /
+Delta). Tier 1 is done except zlib (low demand). Tier 2 left: lz4, uniso,
+zip encryption, unrar (stored only). How the built ones behave, and the decisions they settled:
 [../ref/formats.md](../ref/formats.md).
 
 The site has no build step and stays light. Small third-party libraries are
@@ -86,7 +86,13 @@ and add their content type to the registry `sniff` list (see
   reported as `trailing`. Decompress it (gzip / xz / zstd all exist now) and
   keep listing.
 - [ ] unzip: zstd entries (method 93) could use `lib/zstd.js` now (and xz,
-  method 95, `lib/xz.js`). They're rare outside 7-Zip / WinZip.
+  method 95, `lib/xz.js`; bzip2, method 12, `bunzip2Chunks`). They're rare
+  outside 7-Zip / WinZip.
+- [ ] bunzip2: speed (~17 MB/s in Firefox). Most time is the inverse-BWT
+  walk and the symbol loop; a Web Worker would keep the page responsive
+  (TODO.md).
+- [ ] bunzip2: randomised blocks (bzip2 0.9.0 / 0.9.5, before 2000) are
+  refused. Supporting them needs bzip2's 512-entry `BZ2_rNums` table.
 - [ ] unzstd: speed (~35 MB/s in Firefox). Most time is the sequence loop;
   the literal / match copies are byte loops below 16 / 32 bytes. A Web
   Worker would keep the page responsive (TODO.md).
@@ -118,7 +124,6 @@ Only zlib is left (or fold it into gzip).
 
 | Command | Format | Work | Notes |
 |---|---|---|---|
-| `bunzip2` (also in `untar`) | .bz2, .tar.bz2 | ~400 lines | **Next.** Decode only (Huffman + inverse BWT); no encoder. Add it to `lib/decompress.js` for untar / uncpio, and to un7z (method `040202`). |
 | `lz4` / `unlz4` | .lz4 frame | small–med | Both directions are simple. Low demand. |
 | `uniso` | .iso (ISO 9660 + Joliet) | med | Random access via `Blob.slice`, like zip. No UDF at first. |
 | zip: encryption | ZipCrypto, WinZip AES | med | Fits in the existing `unzip`. AES-CTR, PBKDF2 and HMAC-SHA1 are all in `crypto.subtle`. Needs a password prompt in the UI. |

@@ -14,7 +14,7 @@ const TYPES = [
   ['zip', 'application/zip', 0, ascii('PK\x03\x04')],
   ['zip', 'application/zip', 0, ascii('PK\x05\x06')], // empty zip
   ['gz', 'application/gzip', 0, [0x1f, 0x8b, 8]],
-  ['bz2', 'application/x-bzip2', 0, ascii('BZh')],
+  ...'123456789'.split('').map((d) => ['bz2', 'application/x-bzip2', 0, ascii(`BZh${d}`)]), // and the block size digit
   ['xz', 'application/x-xz', 0, [0xfd, ...ascii('7zXZ'), 0]],
   ['7z', 'application/x-7z-compressed', 0, [...ascii('7z'), 0xbc, 0xaf, 0x27, 0x1c]],
   ['rar', 'application/vnd.rar', 0, ascii('Rar!\x1a\x07')],
@@ -73,7 +73,7 @@ const HEX = /^[0-9a-fA-F]{8}(: [0-9a-fA-F]{2}|  [0-9a-fA-F]{2} )/;
  * Content type of a file for routing: sniffType's ext ('zip', 'gz', 'png', …),
  * 'uu' for text that starts with a uuencode `begin` line, 'hex' for an
  * xxd or hexdump -C dump,
- * 'tar.gz' / 'cpio.gz' (likewise .xz, .zst) for a compressed file whose content
+ * 'tar.gz' / 'cpio.gz' (likewise .xz, .zst, .bz2) for a compressed file whose content
  * starts with a tar / cpio header, or null.
  * Reads the first 512 bytes (and, when compressed, decompresses the first 512 bytes inside).
  */
@@ -89,13 +89,15 @@ export async function sniffFile(file) {
     const text = String.fromCharCode.apply(null, head);
     return UU.test(text) ? 'uu' : HEX.test(text) ? 'hex' : null;
   }
-  if (t.ext !== 'gz' && t.ext !== 'xz' && t.ext !== 'zst') return t.ext;
+  if (!['gz', 'xz', 'zst', 'bz2'].includes(t.ext)) return t.ext;
   // Look inside: a .tar.gz / .cpio.xz opens as an archive.
   const inner = new Uint8Array(HEAD);
   let n = 0;
   const reader = (t.ext === 'gz'
     ? file.slice(0, 1 << 16).stream().pipeThrough(new DecompressionStream('gzip'))
-    : t.ext === 'xz' ? (await import('./xz.js')).unxz(file) : (await import('./zstd.js')).unzstd(file)).getReader();
+    : t.ext === 'xz' ? (await import('./xz.js')).unxz(file)
+      : t.ext === 'zst' ? (await import('./zstd.js')).unzstd(file)
+        : (await import('./bzip2.js')).bunzip2(file)).getReader();
   try {
     while (n < HEAD) {
       const { value, done } = await reader.read();

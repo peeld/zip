@@ -122,10 +122,11 @@ def make_fixtures(work: Path) -> dict:
     has_brotli = make_brotli_fixtures(work, png)
     xzs = make_xz_fixtures(work, src, text, png)
     zstds = make_zstd_fixtures(work, src, text, png)
+    bzip2s = make_bzip2_fixtures(work, src, text, png)
     sevenzips = make_7z_fixtures(work, src)
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
                                                     "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
-                                                    "zstds": zstds, "sevenzips": sevenzips}))
+                                                    "zstds": zstds, "bzip2s": bzip2s, "sevenzips": sevenzips}))
     return {"zips": zips}
 
 
@@ -785,7 +786,7 @@ def make_7z_fixtures(work: Path, src: Path) -> list:
     files = {n: f"src/{n}" for n in names}
     # libarchive: a folder, a symlink, every file; one solid folder (store: one folder per file).
     items = [(n, SOURCES[n]) for n in names] + [("dir", None), ("link-to-hello", ("link", "hello.txt"))]
-    for c, problem in (("lzma2", None), ("lzma1", None), ("deflate", None), ("store", None), ("bzip2", "the 7z BZip2 method")):
+    for c, problem in (("lzma2", None), ("lzma1", None), ("deflate", None), ("store", None), ("bzip2", None)):
         if libarchive_7z(work / f"la-{c}.7z", items, c):
             # A symlink's target is its data: it can't be read when the method isn't supported (it lists as "?").
             links = {"link-to-hello": "?" if problem else "hello.txt"}
@@ -835,11 +836,65 @@ def make_7z_fixtures(work: Path, src: Path) -> list:
         sz("cli-delta.7z", "-m0=Delta:4", "-m1=LZMA")
         sz("cli-deflate.7z", "-m0=Deflate")
         sz("cli-copy.7z", "-m0=Copy")
+        sz("cli-bzip2.7z", "-m0=BZip2")
         sz("cli-ppmd.7z", "-m0=PPMd", problem="the 7z PPMd method")
         sz("cli-aes.7z", "-psecret", problem="this 7z is encrypted")
         subprocess.run([tool, "a", "-t7z", "-bd", "-y", "-psecret", "-mhe=on", str(work / "cli-aes-names.7z"), "."],
                        cwd=src, check=True, capture_output=True)
     return out
+
+
+def make_bzip2_fixtures(work: Path, src: Path, text: bytes, png: bytes) -> list:
+    """.bz2 files from the bzip2 tool (none without it: the bzip2 tests are then skipped).
+    Each entry: { file, want (fixture with the expected output) }."""
+    if not shutil.which("bzip2"):
+        return []
+    def bz(data: bytes, *args) -> bytes:
+        return subprocess.run(["bzip2", "-c", *args], input=data, capture_output=True, check=True).stdout
+    bzip2s = []
+    def add(name, data: bytes, want: str, raw: bytes):
+        (work / name).write_bytes(data)
+        if not (work / want).exists():
+            (work / want).write_bytes(raw)
+        bzip2s.append({"file": name, "want": want})
+    part = text[:3 << 20]
+    add("text.bz2", bz(part), "bzip2-text.txt", part)  # -9: 900 KB blocks
+    add("text-1.bz2", bz(part, "-1"), "bzip2-text.txt", part)  # 100 KB blocks: 32 of them
+    add("random.bin.bz2", bz(SOURCES["random.bin"]), "src/random.bin", SOURCES["random.bin"])
+    add("empty.bz2", bz(b""), "src/empty.txt", b"")
+    add("one.bz2", bz(b"x"), "bzip2-one.txt", b"x")
+    add("picture.bz2", bz(png), "png.bin", png)
+    # Runs of every length around the first run-length step's 4 (+ a count up to 255), and long
+    # zero runs in the MTF output (RUNA / RUNB).
+    runs = b"".join(bytes([65 + n % 26]) * n for n in range(1, 300)) + bytes(1_000_000) + b"end" + b"ab" * 50_000
+    add("runs.bz2", bz(runs, "-1"), "bzip2-runs.bin", runs)
+    # Two streams end to end (`cat a.bz2 b.bz2`, pbzip2), and zero padding after the end.
+    small = text[:100_000]
+    add("multi.bz2", bz(b"part one\n") + bz(b"part two\n", "-1"), "bzip2-multi.txt", b"part one\npart two\n")
+    add("padded.bz2", bz(small) + bytes(512), "bzip2-small.txt", small)
+    # Archives inside bzip2, for untar / uncpio.
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as t:
+        for n in SOURCES:
+            t.add(src / n, n)
+    (work / "python.tar.bz2").write_bytes(bz(tar.getvalue()))
+    if (work / "newc.cpio").exists():
+        (work / "newc.cpio.bz2").write_bytes(bz((work / "newc.cpio").read_bytes()))
+    # Damaged: a flipped byte, cut off, a wrong block CRC (bytes 10-13, after "BZh9" and the
+    # block magic), a wrong stream CRC (the last 32 bits before the padding), junk after the end;
+    # and a block with the "randomised" bit set (bit 112), which only bzip2 0.9.x wrote.
+    good = bz(small)
+    def damaged(name, at, mask):
+        bad = bytearray(good)
+        bad[at] ^= mask
+        (work / name).write_bytes(bad)
+    damaged("corrupt.bz2", len(good) // 2, 0x55)
+    damaged("badcrc.bz2", 11, 0x01)
+    damaged("badstreamcrc.bz2", len(good) - 2, 0x01)
+    damaged("randomised.bz2", 14, 0x80)
+    (work / "cut.bz2").write_bytes(good[: len(good) // 2])
+    (work / "junk.bz2").write_bytes(good + b"junk")
+    return bzip2s
 
 
 def make_brotli_fixtures(work: Path, png: bytes) -> bool:

@@ -13,7 +13,7 @@
 // are often several cpios end to end). Anything else after it is left out and
 // reported in `trailing`.
 //
-// A .cpio.gz / .cpio.xz / .cpio.zst is read through lib/decompress.js, from the start
+// A .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 is read through lib/decompress.js, from the start
 // (like a .tar.gz: opening one entry decompresses up to it). A plain .cpio is random access.
 //
 // Hard links: newc stores the data once, in the last entry of the group; the
@@ -237,7 +237,7 @@ function resolveHardLinks(entries) {
   }
 }
 
-// `compressed`: 'gzip', 'xz', 'zstd' or null (true, from older callers, means gzip).
+// `compressed`: 'gzip', 'xz', 'zstd', 'bzip2' or null (true, from older callers, means gzip).
 const sourceFor = (blob, compressed) => (compressed
   ? streamReader(decompress(blob, compressed === true ? 'gzip' : compressed), cutOff) : blobReader(blob, cutOff));
 

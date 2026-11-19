@@ -5,7 +5,7 @@
 - [ ] Multi-GB outputs: every op now builds its output as a Blob in the "made" list (`core/products.js`) before it's saved, so memory isn't flat any more. Options: a "make straight to a file" path when `showSaveFilePicker` exists and the input is large, or keep the product as a file handle instead of a Blob.
 - [ ] Fallback "Extract all" for Firefox/Safari (unzip, untar, unar, uncpio, `core/archive.js`): offer a single re-zipped download, or a warning, instead of many separate downloads.
 - [ ] Decode CP437 file names when the UTF-8 flag isn't set.
-- [ ] Do compression in a Web Worker so very large jobs don't make the UI stutter. unxz needs it most: its LZMA decoder is plain JS on the page (~15 MB/s). Mind the worker CSP note in `docs/ref/formats.md` ("WebAssembly").
+- [ ] Do compression in a Web Worker so very large jobs don't make the UI stutter. unxz needs it most: its LZMA decoder is plain JS on the page (~15 MB/s); bunzip2 (~17 MB/s) next. Mind the worker CSP note in `docs/ref/formats.md` ("WebAssembly").
 - [ ] Optional: a service worker so the app works offline (supports the "nothing is uploaded" claim).
 
 ## Viewer ("view" in unzip, untar, and the transform ops)
@@ -18,7 +18,7 @@
 - [ ] Optional: `<link rel="modulepreload">` an op's files when Tab completion settles on its command.
 
 ## New ops
-- [ ] More archive / compression / encoding commands (next: bunzip2 … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
+- [ ] More archive / compression / encoding commands (Tier 2 left: lz4, iso, zip encryption, … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/zstd/bzip2/7z/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
 
 ## Later
 - [ ] Command line follow-ups: arguments, `help` completion, per-op aliases, saved history. See [commands.md](commands.md).

@@ -5,9 +5,9 @@
 // folder from the start up to it, like a .tar.gz. sevenZipWalk() decodes each
 // folder once, for "extract all".
 //
-// Methods: LZMA, LZMA2, Deflate (native), Copy, zstd (the 7-Zip-zstd fork),
-// with the x86 BCJ and Delta filters in front. Others (BCJ2, ARM64 and the
-// other BCJ filters, PPMd, BZip2, AES encryption) are refused by name.
+// Methods: LZMA, LZMA2, Deflate (native), BZip2, Copy, zstd (the 7-Zip-zstd
+// fork), with the x86 BCJ and Delta filters in front. Others (BCJ2, ARM64 and
+// the other BCJ filters, PPMd, AES encryption) are refused by name.
 // Checked: the start header's, the header's and every file's CRC32.
 
 import { blobReader, streamReader, toStream } from './source.js';
@@ -316,6 +316,8 @@ function decodeCoder(coder, input, size) {
     case '04f71101':
       if (!input.blob) break;
       return (async function* () { yield* chunksOf((await import('./zstd.js')).unzstd(input.blob)); })();
+    case '040202':
+      return (async function* () { yield* (await import('./bzip2.js')).bunzip2Chunks(src(), { cutOff }); })();
     case '03030103': return filtered(chunks(), x86Filter(0));
     case '03':
       if (coder.props.length < 1) throw corrupt('Delta properties');
@@ -326,7 +328,7 @@ function decodeCoder(coder, input, size) {
   throw new Error(`the 7z ${name} method isn't supported yet`);
 }
 
-const SUPPORTED = new Set(['00', '21', '030101', '040108', '04f71101', '03030103', '03']);
+const SUPPORTED = new Set(['00', '21', '030101', '040108', '040202', '04f71101', '03030103', '03']);
 
 /** Why a folder can't be decoded (an error message), or null. */
 function folderProblem(f) {

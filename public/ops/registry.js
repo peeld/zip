@@ -24,14 +24,14 @@ export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'e
 export const OPS = [
   { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
     input: { accept: '.zip,application/zip', sniff: ['zip'] } },
-  // untar / uncpio before gunzip / unxz / unzstd, so a .tar.gz / .cpio.xz opens as an archive.
-  // gunzip / unxz / unzstd still take one while they're the running command.
-  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar, .tar.gz, .tar.xz or .tar.zst and extract them.',
-    input: { accept: '.tar,.tgz,.tar.gz,.txz,.tar.xz,.tzst,.tar.zst,application/x-tar', sniff: ['tar', 'tar.gz', 'tar.xz', 'tar.zst'] } },
+  // untar / uncpio before gunzip / unxz / unzstd / bunzip2, so a .tar.gz / .cpio.xz opens as an archive.
+  // The decompressors still take one while they're the running command.
+  { id: 'untar', group: 'archive', title: 'Open a tar', description: 'View the files in a .tar, .tar.gz, .tar.xz, .tar.zst or .tar.bz2 and extract them.',
+    input: { accept: '.tar,.tgz,.tar.gz,.txz,.tar.xz,.tzst,.tar.zst,.tbz,.tbz2,.tb2,.tar.bz2,application/x-tar', sniff: ['tar', 'tar.gz', 'tar.xz', 'tar.zst', 'tar.bz2'] } },
   { id: 'unar', group: 'archive', title: 'Open an ar archive', description: 'View the files in an ar archive (.a library, .deb package) and extract them.',
     input: { accept: '.a,.ar,.deb,application/x-archive,application/vnd.debian.binary-package', sniff: ['a', 'deb'] } },
-  { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz, .cpio.xz or .cpio.zst (initramfs) and extract them.',
-    input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,.cpio.zst,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz', 'cpio.zst'] } },
+  { id: 'uncpio', group: 'archive', title: 'Open a cpio archive', description: 'View the files in a .cpio, .cpio.gz, .cpio.xz, .cpio.zst or .cpio.bz2 (initramfs) and extract them.',
+    input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,.cpio.zst,.cpio.bz2,application/x-cpio', sniff: ['cpio', 'cpio.gz', 'cpio.xz', 'cpio.zst', 'cpio.bz2'] } },
   { id: 'un7z', group: 'archive', title: 'Open a 7z archive', description: 'View the files in a .7z archive and extract them.',
     input: { accept: '.7z,application/x-7z-compressed', sniff: ['7z'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
@@ -40,6 +40,8 @@ export const OPS = [
     input: { accept: '.xz,.lzma,.txz,.tlz,application/x-xz', sniff: ['xz', 'tar.xz', 'cpio.xz', 'lzma'] } },
   { id: 'unzstd', group: 'compress', title: 'Decompress a zstd file', description: 'Decompress a .zst (Zstandard) file.',
     input: { accept: '.zst,.zstd,.tzst,application/zstd', sniff: ['zst', 'tar.zst', 'cpio.zst'] } },
+  { id: 'bunzip2', group: 'compress', title: 'Decompress a bzip2 file', description: 'Decompress a .bz2 file.',
+    input: { accept: '.bz2,.bzip2,.tbz,.tbz2,.tb2,application/x-bzip2', sniff: ['bz2', 'tar.bz2', 'cpio.bz2'] } },
   // brotli has no magic number: by name only. Needs the browser's native decoder (lib/brotli.js).
   { id: 'unbrotli', group: 'compress', title: 'Decompress a brotli file', description: 'Decompress a .br file.',
     input: { accept: '.br' } },

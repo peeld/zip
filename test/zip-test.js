@@ -18,6 +18,7 @@ import { unxz, xzInfo, crc64, unxzName, isXz, lzmaInfo } from '../public/lib/xz.
 import { isLzmaAlone } from '../public/lib/lzma.js';
 import { unzstd, zstdInfo, unzstdName, isZstd, xxh64 } from '../public/lib/zstd.js';
 import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
+import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
@@ -402,6 +403,65 @@ async function run() {
     for (const n of ['text.zst', 'python.tar.zst', 'skip.zst', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
     if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.zst')));
     check(types.join() === 'zst,tar.zst,zst,' + (manifest.cpios.length ? ',cpio.zst' : ''), `sniffFile: zst, tar.zst, cpio.zst (${types.join()})`);
+  }
+
+  // 6m. bzip2 (lib/bzip2.js): the bzip2 tool made the fixtures (none without it).
+  if (!manifest.bzip2s.length) skip('bzip2: the bzip2 tool is not installed, no fixtures');
+  else {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    for (const x of manifest.bzip2s) {
+      const blob = await fx2(x.file);
+      const t = performance.now();
+      let got, msg = '';
+      try { got = await read(bunzip2(blob)); } catch (e) { msg = e.message; }
+      const want = await bytes(await fx2(x.want));
+      check(got && same(got, want), `bunzip2: ${x.file} (${want.length} bytes, ${Math.round(performance.now() - t)} ms) ${msg}`);
+    }
+    let progress = 0;
+    const tb = await fx2('text-1.bz2');
+    await read(bunzip2(tb, { onBytes: (n) => { progress += n; } }));
+    check(progress === tb.size, `bunzip2: onBytes reaches the file size (${progress}/${tb.size})`);
+    const m = {};
+    for (const n of ['corrupt.bz2', 'cut.bz2', 'badcrc.bz2', 'badstreamcrc.bz2', 'junk.bz2', 'randomised.bz2', 'src/random.bin']) {
+      m[n] = await err(async () => read(bunzip2(await fx2(n))));
+    }
+    check(m['corrupt.bz2'].startsWith('corrupt bzip2 file'), `bunzip2: a flipped byte is caught (${m['corrupt.bz2']})`);
+    check(m['cut.bz2'] === 'bzip2 file is cut off', `bunzip2: cut off (${m['cut.bz2']})`);
+    check(m['badcrc.bz2'] === 'corrupt bzip2 file: block CRC mismatch', `bunzip2: wrong block CRC (${m['badcrc.bz2']})`);
+    check(m['badstreamcrc.bz2'] === 'corrupt bzip2 file: stream CRC mismatch', `bunzip2: wrong stream CRC (${m['badstreamcrc.bz2']})`);
+    check(m['junk.bz2'].startsWith('not bzip2 data after the end'), `bunzip2: junk after the end (${m['junk.bz2']})`);
+    check(m['randomised.bz2'].startsWith('this bzip2 file uses randomised blocks'), `bunzip2: randomised blocks named (${m['randomised.bz2']})`);
+    check(m['src/random.bin'] === 'not a bzip2 file', `bunzip2: not bzip2 (${m['src/random.bin']})`);
+    const start = await readStart(bunzip2(await fx2('picture.bz2')), 512);
+    check(sniffType(start.bytes)?.ext === 'png' && !start.done, 'bunzip2: readStart sees the PNG inside');
+    check(bunzip2Name('a.txt.bz2') === 'a.txt' && bunzip2Name('x.tbz2') === 'x.tar' && bunzip2Name('x.TBZ') === 'x.tar'
+      && bunzip2Name('pic.bz2', { ext: 'png' }) === 'pic.png' && bunzip2Name('data') === 'data.out', 'bunzip2Name');
+    const head = async (n) => new Uint8Array(await (await fx2(n)).slice(0, 4).arrayBuffer());
+    check(isBzip2(await head('text-1.bz2')) && !isBzip2(await head('src/random.bin')) && !isBzip2(new TextEncoder().encode('BZh!')), 'isBzip2');
+
+    // Archives inside bzip2: untar / uncpio read them through lib/decompress.js.
+    const tbz = await fx2('python.tar.bz2');
+    const t = await readTar(tbz);
+    const hello = t.entries.find((e) => e.name === 'hello.txt');
+    check(t.compressed === 'bzip2' && t.entries.filter((e) => e.kind === 'file').length === manifest.sources.length
+      && same(await read(openTarEntry(tbz, hello, { compressed: 'bzip2' })), await bytes(await fx2('src/hello.txt'))),
+      'readTar: a .tar.bz2 (list, open one entry)');
+    let walked = 0;
+    for await (const { stream } of tarWalk(tbz, { compressed: 'bzip2' })) if (stream) { await read(stream); walked++; }
+    check(walked === manifest.sources.length, `tarWalk: one pass over a .tar.bz2 (${walked})`);
+    if (manifest.cpios.length) {
+      const cbz = await fx2('newc.cpio.bz2');
+      const c2 = await readCpio(cbz);
+      const h2 = c2.entries.find((e) => e.name === 'hello.txt');
+      check(c2.compressed === 'bzip2' && same(await read(openCpioEntry(cbz, h2, { compressed: 'bzip2' })), await bytes(await fx2('src/hello.txt'))),
+        'readCpio: a .cpio.bz2');
+    }
+    const types = [];
+    for (const n of ['text.bz2', 'python.tar.bz2', 'src/random.bin']) types.push(await sniffFile(await fx2(n)));
+    if (manifest.cpios.length) types.push(await sniffFile(await fx2('newc.cpio.bz2')));
+    types.push(await sniffFile(new Blob(['BZh is not a bzip2 file'])));
+    check(types.join() === 'bz2,tar.bz2,' + (manifest.cpios.length ? ',cpio.bz2' : '') + ',', `sniffFile: bz2, tar.bz2, cpio.bz2 (${types.join()})`);
   }
 
   // 6l. 7z (lib/7z.js): libarchive, hand-built coder chains and (if installed) the 7-Zip command line.
@@ -1057,6 +1117,10 @@ async function run() {
       && by('a.dat', 'zst') === 'unzstd' && by('a.zst', 'tar.zst') === 'untar' && by('i.img', 'cpio.zst') === 'uncpio'
       && by('a.tar.zst', 'tar.zst', 'unzstd') === 'unzstd',
       'pickOp: .zst -> unzstd, .tar.zst/.tzst or tar inside -> untar, cpio inside -> uncpio, unzstd keeps them while running');
+    check(id([f('a.bz2')]) === 'bunzip2' && id([f('a.tar.bz2')]) === 'untar' && id([f('a.tbz2')]) === 'untar' && id([f('a.tbz')]) === 'untar'
+      && id([f('i.cpio.bz2')]) === 'uncpio' && by('a.dat', 'bz2') === 'bunzip2' && by('a.bz2', 'tar.bz2') === 'untar'
+      && by('i.img', 'cpio.bz2') === 'uncpio' && by('a.tar.bz2', 'tar.bz2', 'bunzip2') === 'bunzip2',
+      'pickOp: .bz2 -> bunzip2, .tar.bz2/.tbz2 or tar inside -> untar, cpio inside -> uncpio, bunzip2 keeps them while running');
     check(id([f('a.7z')]) === 'un7z' && id([f('A.7Z')]) === 'un7z' && by('a.dat', '7z') === 'un7z', 'pickOp: .7z or 7z content -> un7z');
     check(id([f('a.css.br')]) === 'unbrotli' && id([f('B.BR')]) === 'unbrotli' && id([jpg], 'brotli') === 'brotli' && id([jpg, jpg], 'brotli') === 'zip',
       'pickOp: .br -> unbrotli (by name: brotli has no magic number), brotli takes one file while running');
@@ -1185,6 +1249,28 @@ async function run() {
         for (let i = 0; i < 50 && !root.querySelector('tbody tr'); i++) await sleep(100);
         check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('xz-compressed'),
           'untar op: lists a .tar.xz');
+      }
+      if (op.id === 'bunzip2' && manifest.bzip2s.length) {
+        const file = new File([await fx2('text-1.bz2')], 'notes.txt.bz2');
+        await api.addFiles([{ path: file.name, file }]);
+        const name = root.querySelector('input').value;
+        check(name === 'notes.txt' && root.textContent.includes('bzip2, 100 KB blocks') && root.textContent.includes('size not stored'),
+          `bunzip2 op: reads the header (${name}; ${root.querySelector('.muted')?.textContent})`);
+        const { row, text } = await make(root);
+        check(row.startsWith('notes.txt') && text.length > 100, `bunzip2 op: makes the output, view shows it (${row})`);
+        await api.addFiles([{ path: 'picture.bz2', file: new File([await fx2('picture.bz2')], 'picture.bz2') }]);
+        check(root.querySelector('input').value === 'picture.png' && root.textContent.includes('looks like PNG'), 'bunzip2 op: names the output from the content');
+        await api.addFiles([{ path: 'cut.bz2', file: new File([await fx2('cut.bz2')], 'cut.bz2') }]);
+        check(root.textContent.includes('bzip2 file is cut off') && root.querySelector('button.primary').disabled, 'bunzip2 op: rejects a cut-off file');
+        await api.addFiles([{ path: 'r.bz2', file: new File([await fx2('randomised.bz2')], 'r.bz2') }]);
+        check(root.textContent.includes('randomised blocks') && root.querySelector('button.primary').disabled, 'bunzip2 op: rejects randomised blocks');
+      }
+      if (op.id === 'untar' && manifest.bzip2s.length) {
+        const file = new File([await fx2('python.tar.bz2')], 'python.tar.bz2');
+        await api.addFiles([{ path: file.name, file }]);
+        for (let i = 0; i < 50 && !root.textContent.includes('bzip2-compressed'); i++) await sleep(100);
+        check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('bzip2-compressed'),
+          'untar op: lists a .tar.bz2');
       }
       if (op.id === 'untar' && manifest.zstds.length) {
         const file = new File([await fx2('python.tar.zst')], 'python.tar.zst');

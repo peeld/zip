@@ -1,7 +1,7 @@
 // tar (ustar / pax / GNU) reader and writer. No DOM.
 //
 // Reading: a plain .tar is a Blob, read with Blob.slice (random access, so
-// listing a multi-GB tar only touches its headers). A .tar.gz / .tar.xz / .tar.zst can
+// listing a multi-GB tar only touches its headers). A .tar.gz / .tar.xz / .tar.zst / .tar.bz2 can
 // only be read from the start (lib/decompress.js): listing decompresses it
 // once, and opening an entry decompresses up to that entry again. tarWalk() does one pass over every
 // entry, for "extract all".
@@ -149,8 +149,8 @@ async function* walk(src) {
 export const isTar = (b) => b.length >= BLOCK && !b.subarray(0, BLOCK).every((x) => x === 0) && checksumOk(b);
 
 /**
- * List a .tar, .tar.gz, .tar.xz or .tar.zst Blob. Resolves to { entries, compressed }
- * (compressed: 'gzip', 'xz', 'zstd' or null). Throws if it isn't a tar (or a compressed file holding one).
+ * List a .tar, .tar.gz, .tar.xz, .tar.zst or .tar.bz2 Blob. Resolves to { entries, compressed }
+ * (compressed: 'gzip', 'xz', 'zstd', 'bzip2' or null). Throws if it isn't a tar (or a compressed file holding one).
  */
 export async function readTar(blob) {
   const compressed = await compression(blob);
