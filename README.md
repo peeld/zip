@@ -10,7 +10,7 @@ and it's vendored under `public/vendor/` (see
 
 The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
 list commands, then a command such as `unzip` or `zip`. Or just drop files:
-a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2 in `untar`, a .a / .deb in `unar`, a .cpio / .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 in `uncpio`, a .7z in `un7z`, a .gz in
+a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2 in `untar`, a .a / .deb in `unar`, a .cpio / .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 or an .rpm in `uncpio`, a .7z in `un7z`, a .gz in
 `gunzip`, a .xz / .lzma in `unxz`, a .zst in `unzstd`, a .bz2 in `bunzip2`, a .br in `unbrotli`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, a .b32 / .a85 / .qp / .urlenc in `decode`, anything else goes to `zip`. To check a download, run `hash` and drop the file
 together with its `SHA256SUMS` (or paste the expected hash). A single file
 is matched by its content first (a gzipped tar called `backup.dat` still
@@ -92,7 +92,7 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
 | gzip / gunzip | yes | yes | 16.4+ |
 | tar / untar (.tar.gz) | yes | yes | 16.4+ |
 | ar / unar (.a, .deb) | yes | yes | yes |
-| cpio / uncpio (.cpio, .cpio.gz) | yes | yes | 16.4+ |
+| cpio / uncpio (.cpio, .cpio.gz, initramfs, .rpm) | yes | yes | 16.4+ |
 | base64 / unbase64 | yes | yes | yes |
 | uuencode / uudecode | yes | yes | yes |
 | hex / unhex | yes | yes | yes |
@@ -118,9 +118,12 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
 ## Limits of lib/cpio.js
 
 - Reads newc (and newc+crc, checksum not checked), odc and old binary cpios,
-  plain or gzipped, and several archives end to end (initramfs). Data after
-  the last archive that isn't a cpio (a zstd/xz-compressed initramfs part) is
-  reported, not read.
+  plain or compressed (gzip, xz, zstd, bzip2), and several archives end to end.
+- An initramfs (an uncompressed microcode cpio, then the main one compressed
+  with gzip, xz, lzma, zstd or bzip2) is read in full. lz4 isn't, and only
+  one compressed part is found: data after it is reported, not read.
+- .rpm packages: the payload cpio is read; signatures aren't checked. Delta
+  rpms and packages with files over 4 GB (rpm's stripped cpio) are refused.
 - Symlinks, hard links (newc stores the data once), devices and FIFOs are
   listed but not extracted.
 - `cpio` writes newc, 4 GB per file at most.
@@ -145,8 +148,9 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
 
 ## Limits of lib/zip.js
 
-- Methods: store and deflate. Encrypted entries and other methods (bzip2,
-  LZMA, zstd) are reported as unsupported.
+- Methods: store and deflate; reading also takes bzip2, LZMA, zstd and xz
+  entries. Encrypted entries and other methods (Deflate64, PPMd) are
+  reported as unsupported.
 - ZIP64 is supported for reading and writing. Zips with more than 65535
   entries are tested. Single files over 4 GB follow the spec but haven't been
   tested yet.

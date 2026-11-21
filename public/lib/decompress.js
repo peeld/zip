@@ -34,10 +34,10 @@ function lazyStream(start) {
   });
 }
 
-/** The decompressed bytes of a Blob compressed with `kind` (from compression()). */
+/** The decompressed bytes of a Blob compressed with `kind` (from compression(); also 'lzma', a legacy .lzma, which unxz reads). */
 export function decompress(blob, kind) {
   if (kind === 'gzip') return gunzip(blob);
-  if (kind === 'xz') return lazyStream(async () => (await import('./xz.js')).unxz(blob));
+  if (kind === 'xz' || kind === 'lzma') return lazyStream(async () => (await import('./xz.js')).unxz(blob));
   if (kind === 'zstd') return lazyStream(async () => (await import('./zstd.js')).unzstd(blob));
   if (kind === 'bzip2') return lazyStream(async () => (await import('./bzip2.js')).bunzip2(blob));
   throw new Error(`unknown compression: ${kind}`);

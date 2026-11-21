@@ -21,6 +21,7 @@ const TYPES = [
   ['zst', 'application/zstd', 0, [0x28, 0xb5, 0x2f, 0xfd]],
   ['zst', 'application/zstd', 0, [0x50, 0x2a, 0x4d, 0x18]], // a skippable frame first (pzstd)
   ['tar', 'application/x-tar', 257, ascii('ustar')],
+  ['rpm', 'application/x-rpm', 0, [0xed, 0xab, 0xee, 0xdb]],
   ['deb', 'application/vnd.debian.binary-package', 0, ascii('!<arch>\ndebian-binary')],
   ['a', 'application/x-archive', 0, ascii('!<arch>\n')],
   ['cpio', 'application/x-cpio', 0, ascii('070701')], // newc

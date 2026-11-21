@@ -7,7 +7,8 @@ URL), `brotli` / `unbrotli` (native), `unxz` (.xz, .lzma; also .tar.xz /
 .cpio.xz in untar / uncpio) and `unzstd` (.zst; also .tar.zst / .cpio.zst
 and a .deb's `data.tar.zst`), `bunzip2` (.bz2; also .tar.bz2 / .cpio.bz2),
 `un7z` (.7z: LZMA, LZMA2, Deflate, BZip2, Copy, zstd, with BCJ x86 /
-Delta). Tier 1 is done except zlib (low demand). Tier 2 left: lz4, uniso,
+Delta). unzip also reads bzip2 / LZMA / zstd / xz entries, and uncpio reads
+a whole initramfs and .rpm packages. Tier 1 is done except zlib (low demand). Tier 2 left: lz4, uniso,
 zip encryption, unrar (stored only). How the built ones behave, and the decisions they settled:
 [../ref/formats.md](../ref/formats.md).
 
@@ -67,9 +68,6 @@ and add their content type to the registry `sniff` list (see
 - [ ] decode: only goes by name (`.b32`, `.qp`, …) or while running. Could
   sniff by content, but `detectEncoding` is a guess (qp vs ascii85 vs text),
   so it would need to be careful not to grab ordinary text files from `zip`.
-- [ ] uncpio: .rpm (lead + signature + header, then a compressed cpio
-  payload: zstd on current Fedora/RHEL, xz on older ones). Both decoders
-  exist now; only the rpm headers are left.
 - [ ] uncpio: hard links could be extracted as copies (plain .cpio only),
   same as the untar item. newc+crc checksums aren't checked.
 - [ ] unbrotli / brotli: check Chrome and Safari for native `'brotli'`
@@ -81,13 +79,13 @@ and add their content type to the registry `sniff` list (see
 - [ ] unxz: speed (~15 MB/s output). The decoder keeps its range-coder state
   in `this.*`; local variables in the hot loop should help a lot. And/or a
   Web Worker (TODO.md).
-- [ ] uncpio: a microcode cpio followed by a compressed cpio (the usual
-  initramfs) can now be read, but isn't yet: the second part is still
-  reported as `trailing`. Decompress it (gzip / xz / zstd all exist now) and
-  keep listing.
-- [ ] unzip: zstd entries (method 93) could use `lib/zstd.js` now (and xz,
-  method 95, `lib/xz.js`; bzip2, method 12, `bunzip2Chunks`). They're rare
-  outside 7-Zip / WinZip.
+- [ ] uncpio: an initramfs with more than one compressed part (the kernel
+  allows several end to end). Needs the decoders to report where their input
+  ended. lz4 parts (legacy frame) aren't decoded at all (see Tier 2 lz4).
+- [ ] uncpio: rpm signatures / digests aren't checked (SHA-256 of the header
+  and payload is cheap with `crypto.subtle`); rpm v6 packages are untested.
+- [ ] unzip: Deflate64 (method 9, Windows Explorer writes it for big zips)
+  and PPMd (98, shared with the un7z item) entries.
 - [ ] bunzip2: speed (~17 MB/s in Firefox). Most time is the inverse-BWT
   walk and the symbol loop; a Web Worker would keep the page responsive
   (TODO.md).

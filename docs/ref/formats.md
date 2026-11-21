@@ -66,6 +66,20 @@ Own reader/writer on native `CompressionStream('deflate-raw')`. Store and
 deflate, ZIP64 read and write, CRC checks. Limits are listed in the README.
 The viewer's `peekEntry` stops decompressing after the first bytes, so it
 doesn't check the CRC.
+- Reading also takes bzip2 (method 12, `bunzip2`), LZMA (14), zstd (93,
+  `unzstd`) and xz (95, `unxz`) entries, each decoder imported only when
+  such an entry is opened. They're what 7-Zip (`-mm=BZip2 / LZMA / XZ`),
+  WinZip and Python's zipfile write. LZMA entries are a 4-byte header
+  (version, properties size), the 5 properties, then raw LZMA1 (`lzmaRaw`);
+  flag bit 1 means an end marker follows the data, but the size from the
+  central directory ends it either way. The CRC check covers them all.
+- Other methods fail by number, and by name when it's a known one:
+  `unsupported compression method 98 (PPMd)` (also Deflate64, implode,
+  WavPack, AES).
+- Tests: Python's zipfile (bzip2, LZMA with the end marker), 7-Zip (xz,
+  bzip2, LZMA without it; empty and incompressible files are stored), and
+  zips built by hand for xz and zstd (`hand_zip` in `test/run_tests.py`).
+  A corrupt bzip2 entry and a PPMd one.
 
 ## gzip (`lib/gzip.js`)
 - `gzip()` uses native `CompressionStream('gzip')` but swaps its 10-byte
@@ -407,13 +421,28 @@ doesn't check the CRC.
 - Reads newc (`070701`, hex fields, header+name and data padded to 4),
   newc+crc (`070702`, read the same way; the checksum isn't checked), odc
   (`070707`, octal, no padding) and old binary (16-bit words, either byte
-  order, padded to 2). `readCpio` returns `{ entries, compressed, formats,
-  trailing }`. Names lose a leading `./` or `/`; the `.` entry is dropped.
+  order, padded to 2). `readCpio(blob, { start })` returns `{ entries,
+  compressed, parts, formats, trailing, trailingType, error }`. Names lose a
+  leading `./` or `/`; the `.` entry is dropped.
 - Ends at `TRAILER!!!`. Zero padding after it is skipped and another cpio
   straight after it is read too, so an initramfs that is several archives end
-  to end (CPU microcode first) lists them all. Anything else after it
-  (usually the zstd/xz-compressed main archive) is counted in `trailing` and
-  shown in the status line, not read.
+  to end (CPU microcode first) lists them all.
+- **Initramfs:** compressed data after an uncompressed cpio (gzip, xz,
+  legacy lzma, zstd or bzip2, sniffed by magic number) is the real initramfs
+  after the microcode. It's read as a second **part**: `parts` is `[{ start,
+  compressed, first, count }]`, and each entry has `part`. `openCpioEntry`
+  and `cpioWalk` take `{ parts }` (the older `{ compressed }` still works for
+  one part). Inside a compressed part, only another cpio can follow: the
+  decoders don't say where their input ended, so a third compressed part
+  (the kernel allows several) is not found. Data that isn't read is counted
+  in `trailing`; lz4 (the kernel's legacy lz4 frame, or a standard one) is
+  named in `trailingType`, not decoded. If a second part breaks partway
+  (cut off, corrupt), its entries so far are kept and `error` says why
+  (`the gzip-compressed part at byte 5120: cpio archive is cut off`), and
+  the walks stop after the listed entries, so "Extract all" still works.
+  Compressed data that isn't a cpio stays `trailing`, as before.
+- Inode numbers restart in each archive, so hard-link groups are keyed by
+  part and archive number too.
 - Hard links: newc (GNU cpio, the kernel) stores the data once, in the last
   entry of the group; the others have size 0 and are listed as links to it
   (kind `link`), like tar's hard links. odc stores the data every time, so
@@ -429,9 +458,28 @@ doesn't check the CRC.
   padded to 512 bytes. 4 GB per file (8 hex digits). `cpio` gzips it with
   the checkbox (off by default), which is the form `initramfs` takes.
 - Routing: `cpio` (sniffed from the ASCII magics only: two bytes of binary
-  magic would catch random files) and `cpio.gz` both open in `uncpio`.
+  magic would catch random files), `cpio.gz` (and .xz, …) and `rpm` all open
+  in `uncpio`.
 - Error messages: `not a cpio archive`, `corrupt cpio header at byte N`,
-  `cpio archive is cut off`.
+  `cpio archive is cut off`, and `rpm's stripped cpio (used for files over
+  4 GB) isn't read` for the `07070X` magic.
+
+## rpm (`lib/rpm.js`)
+- `uncpio` opens .rpm packages: `readRpm` reads the 96-byte lead, the
+  signature header (padded to 8 bytes) and the main header, and gives the
+  payload's offset, which goes to `readCpio(blob, { start })`. The payload is
+  a newc cpio, compressed or not; its compression is sniffed from its magic
+  number, not taken from the header's `PAYLOADCOMPRESSOR` (that's only
+  reported). The status line shows `rpm name-version-release.arch`.
+- Only a few string tags of the main header are read (name, version,
+  release, epoch, arch, payload format and compressor). Signatures and
+  digests are not checked. The file list in the header isn't used: the
+  cpio has the names, modes and times.
+- Refused: delta rpms (`drpm` payload), lead versions before 3, other
+  payload formats. Packages with files over 4 GB use rpm's stripped cpio
+  (`07070X`, metadata only in the header): refused by name.
+- Tests: rpms built by hand (`make_rpm_fixtures`: no rpmbuild needed) with
+  xz, zstd, gzip and plain payloads. 7-Zip and libarchive read them too.
 
 ## hash (`lib/hash.js`, `lib/crc32.js`)
 - Pure-JS streaming CRC-32, MD5, SHA-1, SHA-256, SHA-384, SHA-512. All
@@ -461,7 +509,7 @@ doesn't check the CRC.
 
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
-webp, pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, deb, a (ar), cpio, wasm, mp3,
+webp, pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, rpm, deb, a (ar), cpio, wasm, mp3,
 ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
 `tar.gz` / `cpio.gz` (or `.xz`, `.zst`, `.bz2`) for a gzip (or xz, zstd, bzip2) whose first decompressed

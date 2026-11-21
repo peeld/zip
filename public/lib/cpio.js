@@ -11,10 +11,14 @@
 // The archive ends with an entry named "TRAILER!!!". Zero padding after it is
 // skipped, and another archive straight after it is read too (initramfs images
 // are often several cpios end to end). Anything else after it is left out and
-// reported in `trailing`.
+// reported in `trailing`, except compressed data after an uncompressed cpio:
+// that's the usual initramfs (CPU microcode first, then the real one,
+// compressed), so it's decompressed and read as a second part.
 //
 // A .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 is read through lib/decompress.js, from the start
 // (like a .tar.gz: opening one entry decompresses up to it). A plain .cpio is random access.
+// A listing is made of `parts` ({ start, compressed, first, count }): where
+// each one starts in the file, its compression, and its entries' indexes.
 //
 // Hard links: newc stores the data once, in the last entry of the group; the
 // others have size 0 and are listed as links to it (`link`), like tar's hard
@@ -108,13 +112,13 @@ const pad = (n, a) => (a - (n % a)) % a;
 
 /**
  * Walk a source. Yields each entry, with `src` positioned at its data (entry.size
- * bytes); unread data is skipped before the next one. When it finishes, `state`
- * has { formats, trailing }.
+ * bytes); unread data is skipped before the next one. Entries are numbered from
+ * `index`. When it finishes, `state` has { formats, restAt }: restAt is where
+ * data that isn't a cpio starts, after the last archive (null if none).
  */
-async function* walk(src, state) {
+async function* walk(src, state, index = 0) {
   state.formats = new Set();
-  state.trailing = 0;
-  let index = 0;
+  state.restAt = null;
   let carry = new Uint8Array(0); // bytes read past the end of an archive's padding
   const read = async (n) => {
     if (!carry.length) return src.read(n);
@@ -136,11 +140,12 @@ async function* walk(src, state) {
       return; // no trailer: tolerated
     }
     const fmt = cpioFormat(magic);
+    if (!fmt && latin1(magic) === '07070X') throw new Error("rpm's stripped cpio (used for files over 4 GB) isn't read");
     if (!fmt) {
       if (archives === 0 && at === 0) throw new Error('not a cpio archive');
       if (archives === 0) throw new Error(`corrupt cpio header at byte ${at}`);
-      // Something after an archive's trailer (often a compressed cpio): count it and stop.
-      state.trailing = magic.length + (await countRest(src));
+      // Something after an archive's trailer (often a compressed cpio): stop there.
+      state.restAt = at;
       return;
     }
     carry = magic;
@@ -189,7 +194,7 @@ async function* walk(src, state) {
         link,
         special: kind === 'file' || kind === 'dir' || kind === 'symlink' ? null : kind,
         nlink: hd.nlink,
-        inode: `${hd.dev}/${hd.ino}`,
+        inode: `${archives}:${hd.dev}/${hd.ino}`, // inode numbers restart in each archive
       };
       if (name && name !== '.') yield entry;
       else index--;
@@ -226,9 +231,10 @@ function resolveHardLinks(entries) {
   const groups = new Map();
   for (const e of entries) {
     if (e.kind !== 'file' || e.nlink < 2) continue;
-    const g = groups.get(e.inode) || [];
+    const key = `${e.part ?? 0}:${e.inode}`;
+    const g = groups.get(key) || [];
     g.push(e);
-    groups.set(e.inode, g);
+    groups.set(key, g);
   }
   for (const g of groups.values()) {
     const holder = g.find((e) => e.size > 0);
@@ -237,42 +243,113 @@ function resolveHardLinks(entries) {
   }
 }
 
-// `compressed`: 'gzip', 'xz', 'zstd', 'bzip2' or null (true, from older callers, means gzip).
-const sourceFor = (blob, compressed) => (compressed
-  ? streamReader(decompress(blob, compressed === true ? 'gzip' : compressed), cutOff) : blobReader(blob, cutOff));
-
-/**
- * List a .cpio or .cpio.gz Blob. Resolves to { entries, compressed, formats, trailing }:
- *   entries     [{ index, name, kind, dir, size, offset, mode, uid, gid, mtime, link, special }]
- *               kind: 'file', 'dir', 'symlink', 'link' (hard link), 'char device',
- *               'block device', 'fifo', 'socket' or 'other'
- *   formats     the header formats seen ('newc', 'crc', 'odc', 'bin-le', 'bin-be')
- *   trailing    bytes after the last archive that aren't a cpio (0 if none)
- * Throws if it isn't a cpio (or a gzip holding one).
- */
-export async function readCpio(blob) {
-  const compressed = await compression(blob);
-  const src = sourceFor(blob, compressed);
-  const entries = [];
-  const state = {};
-  try {
-    for await (const e of walk(src, state)) entries.push(e);
-  } finally {
-    src.close();
-  }
-  resolveHardLinks(entries);
-  return { entries, compressed, formats: [...state.formats], trailing: state.trailing };
+/** A source over one part: random access if it isn't compressed. */
+function sourceFor(blob, { start, compressed }) {
+  const b = start ? blob.slice(start) : blob;
+  return compressed ? streamReader(decompress(b, compressed), cutOff) : blobReader(b, cutOff);
 }
 
-/** The data of one file entry (from readCpio) as a stream. For a .cpio.gz this decompresses up to the entry. */
-export function openCpioEntry(blob, entry, { compressed = null } = {}) {
-  if (!compressed) {
+/** Older callers pass `{ compressed }` (true means gzip) for a one-part listing. */
+function partsOf({ parts, compressed = null }) {
+  return parts || [{ start: 0, compressed: compressed === true ? 'gzip' : compressed, first: 0, count: Infinity }];
+}
+
+/** Compression of a Blob: compression()'s kinds, 'lzma' (legacy .lzma, a kernel option), or null. */
+async function compressionOf(blob) {
+  const kind = await compression(blob);
+  if (kind) return kind;
+  const head = new Uint8Array(await blob.slice(0, 14).arrayBuffer());
+  return head.length === 14 && head[0] < 225 && (await import('./lzma.js')).isLzmaAlone(head) ? 'lzma' : null;
+}
+
+// lz4 (legacy frame, which the kernel uses, or the standard one): not read, but named in `trailingType`.
+const isLz4 = (b) => b.length >= 4 && b[1] === 0x22 && b[2] === 0x4d && b[3] === 0x18 && b[0] === 0x04
+  || b.length >= 4 && b[0] === 0x02 && b[1] === 0x21 && b[2] === 0x4c && b[3] === 0x18;
+
+/**
+ * List a .cpio (or .cpio.gz, …) Blob. `start` skips a header first (an rpm's payload offset).
+ * Resolves to { entries, compressed, parts, formats, trailing, trailingType, error }:
+ *   entries     [{ index, part, name, kind, dir, size, offset, mode, uid, gid, mtime, link, special }]
+ *               kind: 'file', 'dir', 'symlink', 'link' (hard link), 'char device',
+ *               'block device', 'fifo', 'socket' or 'other'
+ *   compressed  the first part's compression ('gzip', 'xz', 'lzma', 'zstd', 'bzip2' or null)
+ *   parts       [{ start, compressed, first, count }]: more than one when compressed
+ *               data follows an uncompressed cpio (an initramfs)
+ *   formats     the header formats seen ('newc', 'crc', 'odc', 'bin-le', 'bin-be')
+ *   trailing    bytes after the last archive that aren't read (0 if none)
+ *   trailingType  'lz4' if they look like lz4 (not decoded), else null
+ *   error       why a second part stopped early (its entries so far are kept), or null
+ * Throws if it isn't a cpio (or a compressed file holding one).
+ */
+export async function readCpio(blob, { start = 0 } = {}) {
+  const entries = [];
+  const parts = [];
+  const formats = new Set();
+  let trailing = 0, trailingType = null, error = null;
+  let part = { start, compressed: await compressionOf(start ? blob.slice(start) : blob), first: 0, count: 0 };
+  while (part) {
+    const src = sourceFor(blob, part);
+    const state = {};
+    let next = null;
+    try {
+      for await (const e of walk(src, state, entries.length)) {
+        e.part = parts.length;
+        e.offset += part.start;
+        entries.push(e);
+        part.count++;
+      }
+      if (state.restAt !== null) {
+        const restAt = part.start + state.restAt;
+        if (!part.compressed) {
+          const rest = blob.slice(restAt);
+          const kind = await compressionOf(rest);
+          if (kind) next = { start: restAt, compressed: kind, first: entries.length, count: 0 };
+          else {
+            trailing = rest.size;
+            trailingType = isLz4(new Uint8Array(await rest.slice(0, 4).arrayBuffer())) ? 'lz4' : null;
+          }
+        } else {
+          trailing = src.pos - state.restAt + await countRest(src);
+        }
+      }
+    } catch (e) {
+      if (!parts.length) throw e;
+      // A later part: keep what was listed. Compressed data that isn't a cpio is just trailing.
+      if (!part.count && /^(not a cpio archive|empty file)$/.test(e.message)) trailing = blob.size - part.start;
+      else error = `the ${part.compressed}-compressed part at byte ${part.start}: ${e.message}`;
+    } finally {
+      src.close();
+    }
+    for (const f of state.formats || []) formats.add(f);
+    if (part.count || !parts.length) parts.push(part);
+    part = next;
+  }
+  resolveHardLinks(entries);
+  return { entries, compressed: parts[0].compressed, parts, formats: [...formats], trailing, trailingType, error };
+}
+
+/** Walk one part, stopping after its listed entries (a part that failed later isn't read past them). */
+async function* walkPart(src, part) {
+  if (!part.count) return;
+  for await (const e of walk(src, {}, part.first)) {
+    yield e;
+    if (e.index + 1 >= part.first + part.count) return;
+  }
+}
+
+/**
+ * The data of one file entry (from readCpio) as a stream. Pass the listing's
+ * `parts`. A compressed part is decompressed up to the entry.
+ */
+export function openCpioEntry(blob, entry, opts = {}) {
+  const part = partsOf(opts)[entry.part ?? 0];
+  if (!part.compressed) {
     if (entry.offset + entry.size > blob.size) throw cutOff();
     return blob.slice(entry.offset, entry.offset + entry.size).stream();
   }
-  const src = sourceFor(blob, compressed);
+  const src = sourceFor(blob, part);
   return toStream((async function* () {
-    for await (const e of walk(src, {})) {
+    for await (const e of walkPart(src, part)) {
       if (e.index === entry.index) { yield* src.chunks(entry.size); return; }
     }
     throw new Error(`${entry.name}: not found`);
@@ -280,19 +357,21 @@ export function openCpioEntry(blob, entry, { compressed = null } = {}) {
 }
 
 /**
- * Every entry of a readCpio listing in order, in one pass: yields { entry, stream }.
- * A file's stream must be read (or cancelled) before the next entry; other
- * kinds (and hard links) get stream null.
+ * Every entry of a readCpio listing in order, in one pass per part: yields
+ * { entry, stream }. Pass the listing's `parts`. A file's stream must be read
+ * (or cancelled) before the next entry; other kinds (and hard links) get stream null.
  */
-export async function* cpioWalk(blob, entries, { compressed = null } = {}) {
-  const src = sourceFor(blob, compressed);
-  try {
-    for await (const e of walk(src, {})) {
-      const entry = entries[e.index] || e;
-      yield { entry, stream: entry.kind === 'file' ? toStream(src.chunks(entry.size)) : null };
+export async function* cpioWalk(blob, entries, opts = {}) {
+  for (const part of partsOf(opts)) {
+    const src = sourceFor(blob, part);
+    try {
+      for await (const e of walkPart(src, part)) {
+        const entry = entries[e.index] || e;
+        yield { entry, stream: entry.kind === 'file' ? toStream(src.chunks(entry.size)) : null };
+      }
+    } finally {
+      src.close();
     }
-  } finally {
-    src.close();
   }
 }
 

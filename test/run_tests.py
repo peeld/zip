@@ -9,6 +9,7 @@ zips the browser wrote with zipfile and `unzip -t`.
 """
 import base64
 import binascii
+import bz2
 import functools
 import gzip
 import hashlib
@@ -21,6 +22,7 @@ import quopri
 import random
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
@@ -78,6 +80,8 @@ def make_fixtures(work: Path) -> dict:
             z.write(src / n, n)
     zips.append({"file": "python-many.zip", "count": 70002, "check": names[:2]})
 
+    zips += make_method_zips(work, src, names)
+
     # Flip a byte inside the compressed data of the only entry.
     with zipfile.ZipFile(work / "corrupt.zip", "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("hello.txt", SOURCES["hello.txt"])
@@ -128,6 +132,45 @@ def make_fixtures(work: Path) -> dict:
                                                     "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
                                                     "zstds": zstds, "bzip2s": bzip2s, "sevenzips": sevenzips}))
     return {"zips": zips}
+
+
+def hand_zip(path: Path, items: list):
+    """A zip built by hand, for methods Python's zipfile can't write. items: [(name, data, method, packed bytes)]."""
+    out, cd = bytearray(), bytearray()
+    for name, data, method, packed in items:
+        n, crc = name.encode(), zlib.crc32(data)
+        cd += struct.pack("<IHHHHHHIIIHHHHHII", 0x02014B50, 63, 63, 0x800, method, 0, 0x21, crc, len(packed), len(data),
+                          len(n), 0, 0, 0, 0, 0, len(out)) + n
+        out += struct.pack("<IHHHHHIIIHH", 0x04034B50, 63, 0x800, method, 0, 0x21, crc, len(packed), len(data), len(n), 0) + n + packed
+    path.write_bytes(bytes(out + cd + struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, len(items), len(items), len(cd), len(out), 0)))
+
+
+def make_method_zips(work: Path, src: Path, names: list) -> list:
+    """Zips with bzip2 (12), LZMA (14), xz (95) and zstd (93) entries: Python's zipfile, the 7-Zip command line, and by hand."""
+    zips = []
+    for method, label in ((zipfile.ZIP_BZIP2, "bzip2"), (zipfile.ZIP_LZMA, "lzma")):  # Python's LZMA has the end marker (flag bit 1)
+        with zipfile.ZipFile(work / f"python-{label}.zip", "w", method) as z:
+            for n in names:
+                z.write(src / n, n)
+        zips.append({"file": f"python-{label}.zip", "count": len(names), "check": names})
+    if find_7z():
+        for m in ("XZ", "BZip2", "LZMA"):
+            out = work / f"cli-{m.lower()}.zip"
+            # p7zip (CI's 7z) may not write every method into a zip: skip the ones it refuses.
+            if subprocess.run([find_7z(), "a", "-tzip", f"-mm={m}", str(out), "."], cwd=src, capture_output=True).returncode == 0:
+                zips.append({"file": out.name, "count": len(names), "check": names})
+    hand_zip(work / "hand-xz.zip", [(n, d, 95, lzma.compress(d)) for n, d in SOURCES.items()])
+    zips.append({"file": "hand-xz.zip", "count": len(names), "check": names})
+    if shutil.which("zstd"):
+        zst = lambda d: subprocess.run(["zstd", "-q", "-c"], input=d, capture_output=True, check=True).stdout
+        hand_zip(work / "hand-zstd.zip", [(n, d, 93, zst(d)) for n, d in SOURCES.items()])
+        zips.append({"file": "hand-zstd.zip", "count": len(names), "check": names})
+    # Unsupported (PPMd), and a bzip2 entry with a flipped byte.
+    hand_zip(work / "ppmd.zip", [("a.txt", b"abc", 98, b"\x07\x00junk")])
+    bad = bytearray(bz2.compress(SOURCES["hello.txt"]))
+    bad[len(bad) // 2] ^= 0x55
+    hand_zip(work / "corrupt-bzip2.zip", [("hello.txt", SOURCES["hello.txt"], 12, bytes(bad))])
+    return zips
 
 
 def uu_block(name: str, data: bytes, backtick=True, mode="644") -> bytes:
@@ -463,11 +506,78 @@ def make_cpio_fixtures(work: Path, src: Path) -> list:
     (work / "trailing.cpio").write_bytes(newc + tail)
     cpios.append({"file": "trailing.cpio", "files": len(names), "check": names[:1], "formats": ["newc"], "trailing": len(tail)})
 
+    cpios += make_initramfs_fixtures(work, cpio, newc, names)
+    cpios += make_rpm_fixtures(work, newc, names)
+
     bad = bytearray(newc)
     bad[10] = ord("z")  # inside the first header's inode field
     (work / "corrupt.cpio").write_bytes(bad)
     (work / "cut.cpio").write_bytes(newc[:5000])
     return cpios
+
+
+def make_initramfs_fixtures(work: Path, cpio, newc: bytes, names: list) -> list:
+    """Initramfs images as dracut / mkinitramfs make them: an uncompressed cpio of CPU microcode, then the
+    real one compressed (each compressor the kernel takes that we read). Plus lz4 after it (not read) and a
+    compressed part that's cut off inside."""
+    early = work / "early"
+    (early / "kernel/x86/microcode").mkdir(parents=True)
+    (early / "kernel/x86/microcode/GenuineIntel.bin").write_bytes(random.Random(5).randbytes(4000))
+    micro = cpio("newc", early)
+    assert len(micro) % 512 == 0
+    parts = {"gzip": gzip.compress(newc), "xz": lzma.compress(newc), "lzma": lzma.compress(newc, format=lzma.FORMAT_ALONE),
+             "bzip2": bz2.compress(newc)}
+    if shutil.which("zstd"):
+        parts["zstd"] = subprocess.run(["zstd", "-q", "-c"], input=newc, capture_output=True, check=True).stdout
+    out = []
+    for kind, data in parts.items():
+        (work / f"initrd-{kind}.img").write_bytes(micro + data)
+        out.append({"file": f"initrd-{kind}.img", "files": 1 + len(names), "check": names, "formats": ["newc"],
+                    "parts": [None, kind], "second": len(micro)})
+    lz4 = b"\x02\x21\x4c\x18" + random.Random(6).randbytes(200)
+    (work / "initrd-lz4.img").write_bytes(micro + lz4)
+    out.append({"file": "initrd-lz4.img", "files": 1, "check": [], "formats": ["newc"], "trailing": len(lz4), "trailingType": "lz4"})
+    (work / "initrd-cut.img").write_bytes(micro + gzip.compress(newc[: len(newc) - 2000]))
+    out.append({"file": "initrd-cut.img", "files": None, "check": [], "formats": ["newc"],
+                "parts": [None, "gzip"], "second": len(micro), "error": "cpio archive is cut off"})
+    return out
+
+
+def rpm_header(tags: list) -> bytes:
+    """An rpm header: [(tag, type, value)] with type 4 (int32), 6 (string) or 7 (binary)."""
+    index, store = b"", bytearray()
+    for tag, typ, val in tags:
+        if typ == 4:
+            store += b"\0" * (-len(store) % 4)
+        index += struct.pack(">IIII", tag, typ, len(store), len(val) if typ == 7 else 1)
+        store += val.to_bytes(4, "big") if typ == 4 else val.encode() + b"\0" if typ == 6 else val
+    return b"\x8e\xad\xe8\x01\0\0\0\0" + struct.pack(">II", len(tags), len(store)) + index + bytes(store)
+
+
+def make_rpm_fixtures(work: Path, newc: bytes, names: list) -> list:
+    """.rpm packages built by hand (no rpmbuild needed): lead, signature header (padded to 8), main header, payload."""
+    def rpm(name: str, compressor, payload: bytes, source=False):
+        lead = b"\xed\xab\xee\xdb\x03\x00" + struct.pack(">HH", 1 if source else 0, 1) + name.encode().ljust(66, b"\0")
+        lead += struct.pack(">HH", 1, 5) + b"\0" * 16
+        tags = [(1000, 6, "hello"), (1001, 6, "1.0"), (1002, 6, "1.fc41"), (1022, 6, "x86_64"), (1124, 6, "cpio")]
+        if compressor:
+            tags.append((1125, 6, compressor))
+        main = rpm_header(tags)
+        # SIZE (1000) is the main header + payload; 269 is a SHA-1 (hex), 1004 an MD5 (binary). Neither is checked.
+        sig = rpm_header([(1000, 4, len(main) + len(payload)), (269, 6, "3f" * 20), (1004, 7, b"\x01\x02\x03")])
+        sig += b"\0" * (-len(sig) % 8)
+        return lead + sig + main + payload
+    pkgs = {"xz": lzma.compress(newc), "gzip": gzip.compress(newc), None: newc}
+    if shutil.which("zstd"):
+        pkgs["zstd"] = subprocess.run(["zstd", "-q", "-c", "-19"], input=newc, capture_output=True, check=True).stdout
+    out = []
+    for kind, payload in pkgs.items():
+        name = f"hello-{kind or 'plain'}.rpm"
+        data = rpm("hello-1.0-1.fc41", kind, payload)
+        (work / name).write_bytes(data)
+        out.append({"file": name, "files": len(names), "check": names, "formats": ["newc"], "rpm": "hello-1.0-1.fc41.x86_64",
+                    "parts": [kind]})
+    return out
 
 
 def verify_cpio(work: Path, results: list):

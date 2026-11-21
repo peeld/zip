@@ -11,6 +11,7 @@ import { hexEncode, hexDecode, hexFormat } from '../public/lib/hex.js';
 import { readTar, openTarEntry, tarWalk, createTar, paxRecord, tarName } from '../public/lib/tar.js';
 import { readAr, openArEntry, createAr, arNames, arName } from '../public/lib/ar.js';
 import { readCpio, openCpioEntry, cpioWalk, createCpio, cpioName, cpioFormat } from '../public/lib/cpio.js';
+import { readRpm, rpmLabel, isRpm } from '../public/lib/rpm.js';
 import { base32Encode, base32Decode, ascii85Encode, ascii85Decode, qpEncode, qpDecode, urlEncode, urlDecode,
   ENCODINGS, detectEncoding, decodedTextName } from '../public/lib/textenc.js';
 import { brotli, unbrotli, canBrotli, canUnbrotli } from '../public/lib/brotli.js';
@@ -68,6 +69,25 @@ async function run() {
     let threw = false;
     try { await readZip(new Blob(['not a zip at all'])); } catch { threw = true; }
     check(threw, 'non-zip input rejected');
+  }
+  {
+    // bzip2 / LZMA / xz / zstd entries (the method zips in manifest.zips): unsupported methods are named,
+    // corrupt data errors, and peek stops early.
+    const msg = async (p) => { try { await p; return ''; } catch (e) { return e.message; } };
+    const ppmd = await fx2('ppmd.zip');
+    check(await msg(entryBlob(ppmd, (await readZip(ppmd))[0])) === 'a.txt: unsupported compression method 98 (PPMd)',
+      'zip: unsupported method named (PPMd)');
+    const cb = await fx2('corrupt-bzip2.zip');
+    check((await msg(entryBlob(cb, (await readZip(cb))[0]))) !== '', 'zip: corrupt bzip2 entry detected');
+    const methods = [];
+    for (const z of manifest.zips.filter((x) => /^(python-(bzip2|lzma)|cli-|hand-)/.test(x.file))) {
+      const zip = await fx2(z.file);
+      const e = (await readZip(zip)).find((x) => x.name === 'hello.txt');
+      const head = await peekEntry(zip, e, 11);
+      methods.push(e.method);
+      check(new TextDecoder().decode(head) === 'hello world', `${z.file}: peek at a method ${e.method} entry`);
+    }
+    check([12, 14, 95].every((m) => methods.includes(m)), `zip: method zips cover bzip2, LZMA and xz (${[...new Set(methods)]})`);
   }
 
   // 3. Write a zip from the source files; Python verifies it.
@@ -905,15 +925,20 @@ async function run() {
     const fail = async (p) => { try { await p; return ''; } catch (e) { return e.message; } };
     for (const c of manifest.cpios) {
       const blob = await fx2(c.file);
-      const { entries, compressed, formats, trailing } = await readCpio(blob);
+      const start = c.rpm ? (await readRpm(blob)).payload : 0;
+      const { entries, compressed, parts, formats, trailing, trailingType, error } = await readCpio(blob, { start });
       const files = entries.filter((e) => e.kind === 'file');
-      check(files.length === c.files && formats.join() === c.formats.join() && compressed === (c.file.endsWith('.gz') ? 'gzip' : null)
-        && trailing === (c.trailing || 0),
-        `${c.file}: ${files.length} files (expected ${c.files}), formats ${formats}, trailing ${trailing}`);
+      const wantParts = c.parts || [c.file.endsWith('.gz') ? 'gzip' : null];
+      const wantError = c.error ? `the ${wantParts[1]}-compressed part at byte ${c.second}: ${c.error}` : null;
+      check((c.files === null || files.length === c.files) && formats.join() === c.formats.join() && compressed === wantParts[0]
+        && parts.map((p) => p.compressed).join() === wantParts.join() && (!c.second || parts[1].start === c.second)
+        && trailing === (c.trailing || 0) && trailingType === (c.trailingType || null) && error === wantError,
+        `${c.file}: ${files.length} files (expected ${c.files}), formats ${formats}, parts ${parts.map((p) => p.compressed)}, `
+        + `trailing ${trailing} ${trailingType}, error ${error}`);
       let ok = 0;
       for (const name of c.check) {
         const e = entries.findLast((x) => x.name === name); // concat.cpio has two hello.txt: the later one wins, as on extract
-        if (e && same(await read(openCpioEntry(blob, e, { compressed })), await src(name))) ok++;
+        if (e && same(await read(openCpioEntry(blob, e, { parts })), await src(name))) ok++;
         else check(false, `${c.file}: ${name} ${e ? 'content differs' : 'missing'}`);
       }
       if (c.check.length) check(ok === c.check.length, `${c.file}: ${ok} files match their source`);
@@ -962,6 +987,35 @@ async function run() {
         `cpioWalk: only real files get a stream (${walked.join()})`);
       check(await fail(readCpio(await fx2('corrupt.cpio'))) === 'corrupt cpio header at byte 0', 'readCpio: bad header');
       check(await fail(readCpio(await fx2('cut.cpio'))) === 'cpio archive is cut off', 'readCpio: cut-off archive');
+    }
+    if (manifest.cpios.some((c) => c.file === 'initrd-xz.img')) {
+      // An initramfs: the microcode from the first part, everything else from the compressed one, in one walk.
+      const blob = await fx2('initrd-xz.img');
+      const r = await readCpio(blob);
+      const micro = r.entries.find((e) => e.name === 'kernel/x86/microcode/GenuineIntel.bin');
+      const microOk = micro?.part === 0 && micro.size === 4000 && (await read(openCpioEntry(blob, micro, { parts: r.parts }))).length === 4000;
+      let good = 0, n = 0;
+      for await (const { entry, stream } of cpioWalk(blob, r.entries, { parts: r.parts })) {
+        if (!stream) continue;
+        n++;
+        const data = await read(stream);
+        if (entry.part === 1 ? same(data, await src(entry.name)) : data.length === 4000) good++;
+      }
+      check(microOk && n === manifest.sources.length + 1 && good === n, `initrd-xz.img: microcode, then the xz part, in one walk (${good}/${n})`);
+      // A part that's cut off inside: the walk stops after the listed entries, without the error.
+      const cut = await fx2('initrd-cut.img');
+      const rc = await readCpio(cut);
+      let walked = 0;
+      const walkErr = await fail((async () => { for await (const { stream } of cpioWalk(cut, rc.entries, { parts: rc.parts })) { walked++; await stream?.cancel(); } })());
+      check(rc.parts[1].count > 0 && walked === rc.entries.length && walkErr === '', `initrd-cut.img: walk keeps to the listed entries (${walked}/${rc.entries.length}${walkErr ? `, ${walkErr}` : ''})`);
+    }
+    if (manifest.cpios.some((c) => c.rpm)) {
+      const rpm = await readRpm(await fx2('hello-xz.rpm'));
+      check(rpm.name === 'hello' && rpm.version === '1.0' && rpm.release === '1.fc41' && rpm.arch === 'x86_64' && !rpm.source
+        && rpm.payloadCompressor === 'xz' && rpmLabel(rpm) === 'hello-1.0-1.fc41.x86_64' && (await readRpm(await fx2('hello-plain.rpm'))).payloadCompressor === null,
+        `readRpm: name, version, release, arch, compressor (${rpmLabel(rpm)}, ${rpm.payloadCompressor})`);
+      check(await fail(readRpm(await fx2('newc.cpio'))) === 'not an rpm package' && isRpm(Uint8Array.of(0xed, 0xab, 0xee, 0xdb))
+        && await sniffFile(await fx2('hello-xz.rpm')) === 'rpm', 'readRpm: rejects non-rpm; sniffFile: rpm');
     }
     check(await fail(readCpio(new Blob(['hello '.repeat(20)]))) === 'not a cpio archive', 'readCpio: rejects non-cpio');
     check(await fail(readCpio(new Blob([]))) === 'empty file', 'readCpio: empty file');
@@ -1121,6 +1175,7 @@ async function run() {
       && id([f('i.cpio.bz2')]) === 'uncpio' && by('a.dat', 'bz2') === 'bunzip2' && by('a.bz2', 'tar.bz2') === 'untar'
       && by('i.img', 'cpio.bz2') === 'uncpio' && by('a.tar.bz2', 'tar.bz2', 'bunzip2') === 'bunzip2',
       'pickOp: .bz2 -> bunzip2, .tar.bz2/.tbz2 or tar inside -> untar, cpio inside -> uncpio, bunzip2 keeps them while running');
+    check(id([f('pkg.rpm')]) === 'uncpio' && by('x.dat', 'rpm') === 'uncpio', 'pickOp: .rpm or rpm content -> uncpio');
     check(id([f('a.7z')]) === 'un7z' && id([f('A.7Z')]) === 'un7z' && by('a.dat', '7z') === 'un7z', 'pickOp: .7z or 7z content -> un7z');
     check(id([f('a.css.br')]) === 'unbrotli' && id([f('B.BR')]) === 'unbrotli' && id([jpg], 'brotli') === 'brotli' && id([jpg, jpg], 'brotli') === 'zip',
       'pickOp: .br -> unbrotli (by name: brotli has no magic number), brotli takes one file while running');
@@ -1373,6 +1428,13 @@ async function run() {
           `uncpio op: lists files, links and the FIFO (${root.querySelector('.status, [role=status]')?.textContent || ''})`);
         await api.addFiles([{ path: 'x.cpio', file: new File(['nope'], 'x.cpio') }]);
         check(root.textContent.includes('not a cpio archive') && root.querySelector('button.primary').disabled, 'uncpio op: rejects non-cpio');
+        await api.addFiles([{ path: 'hello.rpm', file: new File([await fx2('hello-xz.rpm')], 'hello.rpm') }]);
+        const rpmText = root.textContent;
+        check(rpmText.includes(`hello.rpm: ${manifest.sources.length} files`) && rpmText.includes('rpm hello-1.0-1.fc41.x86_64, newc, xz-compressed'),
+          'uncpio op: an rpm, with its name');
+        await api.addFiles([{ path: 'initrd.img', file: new File([await fx2('initrd-gzip.img')], 'initrd.img') }]);
+        check(root.textContent.includes(`initrd.img: ${manifest.sources.length + 1} files`) && root.textContent.includes('newc, then gzip-compressed from byte'),
+          'uncpio op: an initramfs, microcode then the compressed part');
       }
       if (op.id === 'cpio') {
         api.setFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }, { path: 'd/b.txt', file: new File(['yy'], 'b.txt') }]);

@@ -1,11 +1,15 @@
 // zip.js — dependency-free ZIP reader/writer for the browser.
 //
 // Uses the browser's native CompressionStream / DecompressionStream ('deflate-raw'),
-// so no compression library is needed.
+// so no compression library is needed to write or to read the usual zips.
 //
 // Supported: stored + deflate entries, UTF-8 names, ZIP64 (read and write, >4 GB
-// files / >65535 entries), CRC-32 verification on extract.
-// Not supported: encryption, split/spanned archives, other compression methods.
+// files / >65535 entries), CRC-32 verification on extract. Reading also takes
+// bzip2 (12), LZMA (14), zstd (93) and xz (95) entries (7-Zip, WinZip, Python's
+// zipfile write them): their decoders (lib/bzip2.js, lzma.js, zstd.js, xz.js)
+// are only downloaded when such an entry is opened.
+// Not supported: encryption, split/spanned archives, other compression methods
+// (Deflate64, PPMd, …).
 
 import { crc32Update } from './crc32.js';
 
@@ -21,6 +25,10 @@ const SIG_EOCD64 = 0x06064b50;
 const SIG_EOCD64_LOC = 0x07064b50;
 
 const FLAG_UTF8 = 0x0800;
+
+// Compression methods openEntry() reads, and names for some it doesn't (for the error).
+const METHODS = { 0: 'store', 8: 'deflate', 12: 'bzip2', 14: 'LZMA', 93: 'zstd', 95: 'xz' };
+const OTHER_METHODS = { 9: 'Deflate64', 6: 'implode', 97: 'WavPack', 98: 'PPMd', 99: 'AES' };
 
 // ---------------------------------------------------------------- CRC-32
 
@@ -295,16 +303,47 @@ export async function readZip(blob) {
  */
 export async function openEntry(blob, entry, onBytes) {
   if (entry.encrypted) throw new Error(`${entry.name}: encrypted entries are not supported`);
-  if (entry.method !== 0 && entry.method !== 8) {
-    throw new Error(`${entry.name}: unsupported compression method ${entry.method}`);
+  if (!(entry.method in METHODS)) {
+    const name = OTHER_METHODS[entry.method];
+    throw new Error(`${entry.name}: unsupported compression method ${entry.method}${name ? ` (${name})` : ''}`);
   }
   const lh = view(await readBytes(blob, entry.offset, entry.offset + 30));
   if (lh.getUint32(0, true) !== SIG_LOCAL) throw new Error(`${entry.name}: corrupt local header`);
   const start = entry.offset + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
+  const data = blob.slice(start, start + entry.compressedSize);
+  return (await decoded(data, entry)).pipeThrough(crcTap({ crc: MAX32, size: 0 }, onBytes, entry.crc));
+}
 
-  let s = blob.slice(start, start + entry.compressedSize).stream();
-  if (entry.method === 8) s = s.pipeThrough(new DecompressionStream('deflate-raw'));
-  return s.pipeThrough(crcTap({ crc: MAX32, size: 0 }, onBytes, entry.crc));
+/** An entry's compressed bytes (`data`) as a stream of its uncompressed bytes. */
+async function decoded(data, entry) {
+  switch (entry.method) {
+    case 0: return data.stream();
+    case 8: return data.stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    case 12: return (await import('./bzip2.js')).bunzip2(data);
+    case 93: return (await import('./zstd.js')).unzstd(data);
+    case 95: return (await import('./xz.js')).unxz(data);
+    case 14: return lzmaEntry(data, entry);
+  }
+  throw new Error(`${entry.name}: unsupported compression method ${entry.method}`);
+}
+
+/**
+ * Method 14: a 4-byte header (LZMA SDK version, properties size), the 5 LZMA
+ * properties (lc/lp/pb byte, dictionary size), then raw LZMA1 data. Flag bit 1
+ * says it ends with an end marker; the size from the central directory ends it either way.
+ */
+async function lzmaEntry(data, entry) {
+  if (entry.size === 0) return new Blob([]).stream();
+  const cutOff = () => new Error(`${entry.name}: LZMA data is cut off`);
+  const { lzmaRaw, parseProps } = await import('./lzma.js');
+  const { blobReader, toStream } = await import('./source.js');
+  const h = await readBytes(data, 0, 4);
+  const propsSize = h.length === 4 ? h[2] | h[3] << 8 : 0;
+  if (propsSize < 5) throw new Error(`${entry.name}: corrupt LZMA header`);
+  const p = view(await readBytes(data, 4, 4 + propsSize));
+  if (p.byteLength < 5) throw cutOff();
+  const src = blobReader(data.slice(4 + propsSize), cutOff);
+  return toStream(lzmaRaw(src, { props: parseProps(p.getUint8(0)), dictSize: p.getUint32(1, true), size: entry.size, cutOff }));
 }
 
 /**
