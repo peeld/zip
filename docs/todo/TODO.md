@@ -10,16 +10,17 @@
 
 ## Viewer ("view" in unzip, untar, and the transform ops)
 - [ ] "Show more" button: load the next chunk (re-reads the entry from the start, which is cheap for small entries).
-- [ ] Image preview (png/jpg/gif/webp) using a `blob:` URL. The CSP already allows `img-src blob:`.
+- [ ] Image preview (png/jpg/gif/webp/avif/bmp, and SVG under the `<img>` exception) using a `blob:` URL. The CSP already allows `img-src blob:`. Shares the decode step with image conversion ([images.md](images.md)).
 - [ ] Audio/video preview: needs `media-src blob:` added to the CSP in `.htaccess` and `index.html`.
-- Rule: never render HTML/SVG/PDF from an archive (see `docs/ref/formats.md`).
+- Rule: never show HTML/SVG/PDF as a live document; images (SVG included) only through `<img>` from a `blob:` URL (see `docs/ref/formats.md`, "Untrusted content").
 
 ## Shell / ops
 - [ ] Optional: `<link rel="modulepreload">` an op's files when Tab completion settles on its command.
 
 ## New ops
+- [ ] Image conversion (`convert`): next up; the plan and what's already been checked. See [images.md](images.md).
 - [ ] More archive / compression / encoding commands (Tier 2 left: lz4, iso, zip encryption, … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/zstd/bzip2/7z/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
 
 ## Later
 - [ ] Command line follow-ups: arguments, `help` completion, per-op aliases, saved history. See [commands.md](commands.md).
-- [ ] Other local media operations (image resize/convert, etc.) using the same static, no-upload approach.
+- [ ] Other local media operations (audio/video) using the same static, no-upload approach.

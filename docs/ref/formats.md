@@ -25,7 +25,20 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
   a download link and [view] [x], so it can be looked at before saving and made again after
   [clear]. The cost: the whole output is in memory until it's cleared.
 - **Untrusted content** from a file is only ever shown with `textContent`.
-  Never render HTML/SVG/PDF from an archive.
+  Never show HTML, SVG or PDF from a file as a live document (`innerHTML`,
+  inline `<svg>`, `<iframe>`, `<object>`, `<embed>`, a new tab). Such a
+  document could run script with the app's privileges and read the other
+  dropped files, leak them by navigating (`connect-src 'none'` doesn't block
+  a link or `location = …`), or draw a fake copy of the app's UI.
+  - **Exception: images through `<img>`.** Raster images, and SVG, may be
+    decoded by loading a `blob:` URL into an `<img>` (or with
+    `createImageBitmap`), to convert them or show a preview. Browsers run SVG
+    in an `<img>` in secure image mode: no script, no outside loads, no links
+    or interaction, so it never becomes a live document. The CSP already
+    allows `img-src blob:`. What's left is the browser's decoder itself (as for
+    PNG / JPEG) and a deliberately heavy SVG hanging the tab. SVG can only be
+    rasterised on the page, not in a worker, so cap its output size.
+  - HTML and PDF have no such mode: they stay text / hex only.
 - **Native browser APIs where they exist** (`CompressionStream`), then a
   light third-party library if one fits (rules: [adding-an-op.md](adding-an-op.md),
   "Third-party libraries"), our own small JS otherwise (hashes: `crypto.subtle` can't stream, see hash below). WebAssembly is allowed
