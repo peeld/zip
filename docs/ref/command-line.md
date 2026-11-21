@@ -62,7 +62,9 @@ gone on reload.
 accepts them; otherwise the first op in the registry that does. So specific
 ops (`.zip`, `.tar`, `.a`/`.deb`, `.gz`, `.b64`, `.uu`, `.hex`, `.b32`/`.a85`/`.qp`/`.urlenc`) are listed before the catch-all `zip`, and
 single-file encoders (`gzip`, `base64`, `uuencode`, `hex`, `encode`, `input: {}`) come after it: they only
-get files while they're the running command. `pickOp` tests in
+get files while they're the running command. So does `convert`, which takes
+one image (by content: png, jpg, gif, webp, bmp, avif, qoi; by name otherwise,
+.ico, .tga and .pbm / .pgm / .ppm / .pnm / .pam included): a dropped image still goes to `zip` unless `convert` is running. `pickOp` tests in
 `test/zip-test.js` pin this down.
 
 Routing by content: when exactly one file is dropped, the shell runs

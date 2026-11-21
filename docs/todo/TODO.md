@@ -18,7 +18,7 @@
 - [ ] Optional: `<link rel="modulepreload">` an op's files when Tab completion settles on its command.
 
 ## New ops
-- [ ] Image conversion (`convert`): next up; the plan and what's already been checked. See [images.md](images.md).
+- [ ] Image follow-ups: resize (needs arguments), SVG to PNG, GIF writing, TIFF reading. `convert` (phases 1 and 2: the browser's codecs, then our own ICO / TGA / QOI / PNM) is done. See [images.md](images.md).
 - [ ] More archive / compression / encoding commands (Tier 2 left: lz4, iso, zip encryption, … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/zstd/bzip2/7z/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
 
 ## Later

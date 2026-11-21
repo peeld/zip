@@ -19,7 +19,7 @@
 
 // `group` is the heading the op is listed under in `help` (GROUPS gives the
 // heading order); `help <group>` lists just that group.
-export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'encoding', check: 'checksums' };
+export const GROUPS = { archive: 'archives', compress: 'compression', encode: 'encoding', image: 'images', check: 'checksums' };
 
 export const OPS = [
   { id: 'unzip', group: 'archive', title: 'Open a zip', description: 'View the files in a zip archive and extract them.',
@@ -75,6 +75,12 @@ export const OPS = [
     input: {} },
   { id: 'encode', group: 'encode', title: 'Encode as text', description: 'Encode one file as base32, ascii85, quoted-printable or URL-encoded text.',
     input: {} },
+  // Takes images, but only while it's the running command: a dropped image still goes to zip.
+  { id: 'convert', group: 'image', title: 'Convert an image', description: 'Convert an image to PNG, JPEG, WebP, ICO, BMP, TGA, QOI or PPM.',
+    input: { accept: '.png,.jpg,.jpeg,.jfif,.jpe,.gif,.webp,.bmp,.dib,.ico,.cur,.avif,.qoi,.tga,.icb,.vda,.vst,.pbm,.pgm,.ppm,.pnm,.pam,'
+      + 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/x-icon,image/vnd.microsoft.icon,image/avif,image/qoi,image/x-tga,'
+      + 'image/x-portable-bitmap,image/x-portable-graymap,image/x-portable-pixmap,image/x-portable-anymap',
+      sniff: ['png', 'jpg', 'gif', 'webp', 'bmp', 'avif', 'qoi'] } },
   // Takes any files while running. A checksum list dropped with them
   // (SHA256SUMS, *.md5, *.sfv, …) is read as the list to check against.
   { id: 'hash', group: 'check', title: 'Checksums', description: 'Hash files (SHA-256, MD5, …) and check them against a hash or a SHA256SUMS list.',

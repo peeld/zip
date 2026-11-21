@@ -128,9 +128,11 @@ def make_fixtures(work: Path) -> dict:
     zstds = make_zstd_fixtures(work, src, text, png)
     bzip2s = make_bzip2_fixtures(work, src, text, png)
     sevenzips = make_7z_fixtures(work, src)
+    images = make_image_fixtures(work)
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
                                                     "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
-                                                    "zstds": zstds, "bzip2s": bzip2s, "sevenzips": sevenzips}))
+                                                    "zstds": zstds, "bzip2s": bzip2s, "sevenzips": sevenzips,
+                                                    "images": images}))
     return {"zips": zips}
 
 
@@ -1046,6 +1048,306 @@ ADD_WASM = bytes.fromhex(
 )
 
 
+try:
+    from PIL import Image, ImageCms, ImageOps, PngImagePlugin
+except ImportError:
+    Image = None
+
+# Quadrant colours of img/rotated.jpg (40 x 20 stored, EXIF orientation 6: shown 20 x 40).
+QUADS = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
+
+
+def pattern(w: int, h: int):
+    im = Image.new("RGB", (w, h))
+    im.putdata([(x * 4 % 256, y * 5 % 256, (x + y) * 2 % 256) for y in range(h) for x in range(w)])
+    return im
+
+
+def png16(w: int, h: int, value) -> bytes:
+    """A 16-bit grayscale PNG, by hand (Pillow 9 mangles I;16 data)."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    rows = b"".join(b"\0" + b"".join(struct.pack(">H", value(x, y)) for x in range(w)) for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 16, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def qoi_encode(w: int, h: int, px: list) -> bytes:
+    """QOI (qoiformat.org) from RGBA tuples, as the reference encoder does it (an independent check on lib/imagefmt.js)."""
+    out = bytearray(b"qoif" + struct.pack(">IIBB", w, h, 4, 0))
+    index = [(0, 0, 0, 0)] * 64
+    prev, run = (0, 0, 0, 255), 0
+    for i, p in enumerate(px):
+        if p == prev:
+            run += 1
+            if run == 62 or i == len(px) - 1:
+                out.append(0xc0 | (run - 1))
+                run = 0
+            continue
+        if run:
+            out.append(0xc0 | (run - 1))
+            run = 0
+        r, g, b, a = p
+        hh = (r * 3 + g * 5 + b * 7 + a * 11) % 64
+        if index[hh] == p:
+            out.append(hh)
+        else:
+            index[hh] = p
+            if a == prev[3]:
+                dr, dg, db = [((x - y + 128) & 255) - 128 for x, y in zip(p[:3], prev[:3])]
+                if -2 <= dr <= 1 and -2 <= dg <= 1 and -2 <= db <= 1:
+                    out.append(0x40 | (dr + 2) << 4 | (dg + 2) << 2 | (db + 2))
+                elif -32 <= dg <= 31 and -8 <= dr - dg <= 7 and -8 <= db - dg <= 7:
+                    out += bytes([0x80 | (dg + 32), (dr - dg + 8) << 4 | (db - dg + 8)])
+                else:
+                    out += bytes([0xfe, r, g, b])
+            else:
+                out += bytes([0xff, r, g, b, a])
+        prev = p
+    return bytes(out + b"\0" * 7 + b"\1")
+
+
+def qoi_decode(data: bytes):
+    """(width, height, channels, [RGBA tuples]) of a QOI file; raises ValueError if it's malformed."""
+    if data[:4] != b"qoif" or data[-8:] != b"\0" * 7 + b"\1":
+        raise ValueError("no QOI magic or end marker")
+    w, h, channels, _ = struct.unpack(">IIBB", data[4:14])
+    index = [(0, 0, 0, 0)] * 64
+    r, g, b, a = 0, 0, 0, 255
+    px, p, end = [], 14, len(data) - 8
+    while len(px) < w * h:
+        if p >= end:
+            raise ValueError(f"ran out of data after {len(px)} pixels")
+        b1 = data[p]
+        p += 1
+        if b1 == 0xfe:
+            r, g, b = data[p:p + 3]
+            p += 3
+        elif b1 == 0xff:
+            r, g, b, a = data[p:p + 4]
+            p += 4
+        elif b1 >> 6 == 0:
+            r, g, b, a = index[b1]
+        elif b1 >> 6 == 1:
+            r, g, b = (r + (b1 >> 4 & 3) - 2) & 255, (g + (b1 >> 2 & 3) - 2) & 255, (b + (b1 & 3) - 2) & 255
+        elif b1 >> 6 == 2:
+            b2, dg = data[p], (b1 & 63) - 32
+            p += 1
+            r, g, b = (r + dg - 8 + (b2 >> 4)) & 255, (g + dg) & 255, (b + dg - 8 + (b2 & 15)) & 255
+        else:
+            px += [(r, g, b, a)] * ((b1 & 63) + 1)
+            index[(r * 3 + g * 5 + b * 7 + a * 11) % 64] = (r, g, b, a)
+            continue
+        index[(r * 3 + g * 5 + b * 7 + a * 11) % 64] = (r, g, b, a)
+        px.append((r, g, b, a))
+    if p != end or len(px) != w * h:
+        raise ValueError(f"{len(px)} pixels for {w} x {h}, {end - p} bytes left over")
+    return w, h, channels, px
+
+
+def alpha_pattern(w: int, h: int):
+    """RGBA with every kind of pixel QOI has an op for: runs, small and larger steps, alpha changes, transparent colours."""
+    im = Image.new("RGBA", (w, h))
+    im.putdata([(x * 4 % 256, y * 5 % 256, 255 - x, 255 if x < w // 2 else (x * 9 + y) % 256)
+                if y % 8 else (10, 20, 30, 255) for y in range(h) for x in range(w)])
+    return im
+
+
+def pnm(magic: str, w: int, h: int, maxval, samples, ascii_=False, comment=None) -> bytes:
+    """A PNM by hand (Pillow 9 writes only P4 / P5 / P6 at 8 bits)."""
+    head = f"{magic}\n" + (f"# {comment}\n" if comment else "") + f"{w} {h}\n" + (f"{maxval}\n" if maxval else "")
+    if ascii_:
+        return (head + "\n".join(" ".join(map(str, samples[i:i + 12])) for i in range(0, len(samples), 12)) + "\n").encode()
+    return head.encode() + b"".join(struct.pack(">H" if maxval > 255 else "B", v) for v in samples)
+
+
+def make_image_fixtures(work: Path) -> bool:
+    """img/*: sources for the convert op, made with Pillow (the tests are skipped without it)."""
+    if Image is None:
+        return False
+    d = work / "img"
+    d.mkdir()
+    (work / "img-out").mkdir()
+    opaque = pattern(64, 48)
+    opaque.save(d / "opaque.png")
+    opaque.save(d / "opaque.bmp")
+    opaque.save(d / "photo.webp", quality=90)
+    alpha = Image.new("RGBA", (64, 48), (200, 50, 50, 255))
+    alpha.paste((0, 0, 255, 0), (0, 0, 32, 48))
+    text = PngImagePlugin.PngInfo()
+    text.add_text("Comment", "made by run_tests.py")
+    alpha.save(d / "alpha.png", pnginfo=text)
+    rot = Image.new("RGB", (40, 20))
+    for i, c in enumerate(QUADS):
+        rot.paste(c, (i % 2 * 20, i // 2 * 10, i % 2 * 20 + 20, i // 2 * 10 + 10))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    exif[0x8825] = {1: "N", 2: (51.0, 30.0, 0.0)}
+    icc = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    rot.save(d / "rotated.jpg", quality=95, exif=exif, icc_profile=icc)
+    red, blue = Image.new("RGB", (32, 32), (255, 0, 0)), Image.new("RGB", (32, 32), (0, 0, 255))
+    red.save(d / "anim.gif", save_all=True, append_images=[blue], duration=100, loop=0)
+    red.save(d / "anim.png", save_all=True, append_images=[blue], duration=100)
+    red.save(d / "anim.webp", save_all=True, append_images=[blue], duration=100, lossless=True)
+    (d / "deep.png").write_bytes(png16(32, 32, lambda x, y: (x * 32 + y) * 64))
+    lossless = Image.new("RGBA", (48, 32), (10, 200, 30, 255))
+    lossless.paste((0, 0, 0, 0), (0, 0, 24, 32))
+    lossless.save(d / "lossless.webp", lossless=True)
+    icon = Image.new("RGBA", (48, 48), (20, 40, 220, 255))
+    icon.save(d / "icons.ico", sizes=[(16, 16), (32, 32), (48, 48)])
+    # Formats read and written by lib/imagefmt.js.
+    ap = alpha_pattern(40, 24)
+    (d / "alpha.qoi").write_bytes(qoi_encode(40, 24, list(ap.getdata())))
+    ap.save(d / "alpha.tga")                                   # 32-bit, bottom-up
+    opaque.save(d / "rle.tga", compression="tga_rle")         # 24-bit RLE
+    opaque.save(d / "top.tga", orientation=1)                  # top-down
+    opaque.quantize(16).save(d / "palette.tga")                # colour-mapped
+    opaque.save(d / "opaque.ppm")                              # P6
+    grey = opaque.convert("L")
+    grey.save(d / "grey.pgm")                                  # P5
+    (d / "deep.pgm").write_bytes(pnm("P5", 32, 32, 65535, [(x * 32 + y) * 64 for y in range(32) for x in range(32)]))
+    (d / "ascii.ppm").write_bytes(pnm("P3", 64, 48, 255, [c for p in opaque.getdata() for c in p], True, "made by run_tests.py"))
+    bits = [(x // 4 + y // 4) % 2 for y in range(20) for x in range(30)]  # 1 = black
+    (d / "ascii.pbm").write_bytes(pnm("P1", 30, 20, None, bits, True))
+    (d / "packed.pbm").write_bytes(b"P4\n30 20\n" + b"".join(
+        int("".join(map(str, bits[y * 30:y * 30 + 30])) + "00", 2).to_bytes(4, "big") for y in range(20)))
+    (d / "alpha.pam").write_bytes(b"P7\nWIDTH 40\nHEIGHT 24\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n"
+                                  + bytes(c for p in ap.getdata() for c in p))
+    checker = Image.new("L", (300, 300))
+    checker.putdata([255 * ((x + y) % 2) for y in range(300) for x in range(300)])
+    checker.convert("RGB").save(d / "checker.png")
+    return True
+
+
+def verify_images(work: Path, results: list):
+    """The images the browser converted (uploaded as img-out/<name>), checked with Pillow."""
+    def check(ok, msg):
+        results.append(f"{'PASS' if ok else 'FAIL'} {msg}")
+
+    if Image is None:
+        results.append("SKIP convert: Pillow not installed (pip install pillow)")
+        return
+    out, src = work / "img-out", work / "img"
+
+    def load(name, fmt, size):
+        p = out / name
+        if not p.exists():
+            check(False, f"convert: {name} was not uploaded")
+            return None
+        im = Image.open(p)
+        im.load()
+        ok = im.format == fmt and im.size == size
+        check(ok, f"convert: {name} is a {fmt} of {size} ({im.format}, {im.size}, {im.mode})")
+        return im if ok else None
+
+    def close(a, b, tol):
+        return max(abs(x - y) for p, q in zip(a, b) for x, y in zip(p if isinstance(p, tuple) else (p,), q if isinstance(q, tuple) else (q,))) <= tol
+
+    want = pattern(64, 48)
+    if im := load("opaque.bmp", "BMP", (64, 48)):
+        check(im.mode == "RGB" and list(im.getdata()) == list(want.getdata()), "convert: PNG -> BMP (ours) has the same pixels")
+    if im := load("opaque-from-bmp.png", "PNG", (64, 48)):
+        check(list(im.convert("RGB").getdata()) == list(want.getdata()), "convert: BMP -> PNG has the same pixels")
+    if im := load("photo.png", "PNG", (64, 48)):
+        ref = Image.open(src / "photo.webp").convert("RGB")
+        check(close(list(im.convert("RGB").getdata()), list(ref.getdata()), 8), "convert: lossy WebP -> PNG matches Pillow's decode")
+    if im := load("alpha.jpg", "JPEG", (64, 48)):
+        px = im.convert("RGB")
+        check(close([px.getpixel((8, 20))], [(255, 255, 255)], 6) and close([px.getpixel((50, 20))], [(200, 50, 50)], 12),
+              f"convert: PNG -> JPEG fills transparency with white ({px.getpixel((8, 20))}, {px.getpixel((50, 20))})")
+        check(not im.info.get("exif") and not im.info.get("icc_profile"), "convert: the JPEG has no EXIF or ICC profile")
+    if im := load("alpha.webp", "WEBP", (64, 48)):
+        px = im.convert("RGBA")
+        check(px.getpixel((8, 20))[3] == 0 and px.getpixel((50, 20))[3] == 255 and close([px.getpixel((50, 20))[:3]], [(200, 50, 50)], 12),
+              f"convert: PNG -> WebP keeps transparency ({px.getpixel((8, 20))}, {px.getpixel((50, 20))})")
+    if im := load("rotated.png", "PNG", (20, 40)):
+        ref = ImageOps.exif_transpose(Image.open(src / "rotated.jpg")).convert("RGB")
+        pts = [(5, 5), (15, 5), (5, 35), (15, 35), (5, 15), (15, 25)]
+        got, exp = [im.convert("RGB").getpixel(p) for p in pts], [ref.getpixel(p) for p in pts]
+        check(close(got, exp, 12), f"convert: JPEG -> PNG is turned upright from EXIF orientation 6 ({got} vs {exp})")
+        check("exif" not in im.info and "icc_profile" not in im.info and not im.getexif(), "convert: the PNG has no EXIF or ICC profile")
+    for name in ("anim-gif.png", "anim-png.png", "anim-webp.png"):
+        if im := load(name, "PNG", (32, 32)):
+            check(close([im.convert("RGB").getpixel((16, 16))], [(255, 0, 0)], 2) and not getattr(im, "is_animated", False),
+                  f"convert: {name}: one frame, the first one")
+    if im := load("deep.png", "PNG", (32, 32)):
+        got = [p[0] if isinstance(p, tuple) else p for p in im.getdata()]
+        exp = [((x * 32 + y) * 64) / 257 for y in range(32) for x in range(32)]
+        worst = max(abs(a - b) for a, b in zip(got, exp))
+        check(im.mode in ("L", "LA", "RGB", "RGBA") and worst <= 2, f"convert: 16-bit PNG -> 8-bit PNG ({im.mode}, off by {worst:.1f} at most)")
+    if im := load("lossless.bmp", "BMP", (48, 32)):
+        check(im.getpixel((5, 5)) == (255, 255, 255) and im.getpixel((40, 5)) == (10, 200, 30),
+              f"convert: lossless WebP -> BMP, transparency white ({im.getpixel((5, 5))}, {im.getpixel((40, 5))})")
+    if im := load("icons.png", "PNG", (48, 48)):
+        check(close([im.convert("RGB").getpixel((24, 24))], [(20, 40, 220)], 2), "convert: ICO -> PNG, the 48 x 48 icon")
+
+    # lib/imagefmt.js: QOI, TGA, PNM in and out, and the ICO writer.
+    ap = list(alpha_pattern(40, 24).getdata())
+    def same(got, exp, what, opaque_only=False):
+        bad = [i for i, (p, q) in enumerate(zip(got, exp)) if (p != q and not (opaque_only and q[3] < 255 and p[3] == q[3]))]
+        check(len(got) == len(exp) and not bad, f"convert: {what}" + (f" (pixel {bad[0]}: {got[bad[0]]} vs {exp[bad[0]]})" if bad else ""))
+    if im := load("alpha-from-qoi.tga", "TGA", (40, 24)):
+        same(list(im.convert("RGBA").getdata()), ap, "QOI -> TGA (no canvas in between) keeps every pixel, transparent ones too")
+    if im := load("alpha-from-qoi.png", "PNG", (40, 24)):
+        same([p if p[3] == 255 else (0, 0, 0, p[3]) for p in im.convert("RGBA").getdata()],
+             [p if p[3] == 255 else (0, 0, 0, p[3]) for p in ap], "QOI -> PNG: the opaque pixels and every alpha value", True)
+    for name, src_name, what in (("alpha.qoi", "alpha.tga", "TGA (32-bit, bottom-up) -> QOI"), ("pam.qoi", "alpha.pam", "PAM -> QOI")):
+        p = out / name
+        try:
+            w, h, ch, px = qoi_decode(p.read_bytes())
+            check((w, h, ch) == (40, 24, 4), f"convert: {name} is a 40 x 24 QOI with alpha ({w} x {h}, {ch} channels)")
+            same(px, ap, f"{what} keeps every pixel")
+        except (OSError, ValueError) as e:
+            check(False, f"convert: {name}: {e}")
+    try:
+        w, h, ch, px = qoi_decode((out / "opaque.qoi").read_bytes())
+        check((w, h, ch) == (64, 48, 3) and px == [p + (255,) for p in want.getdata()],
+              f"convert: PNG -> QOI: 3 channels, the same pixels ({w} x {h}, {ch} channels)")
+        size = (out / "opaque.qoi").stat().st_size
+        check(size == len(qoi_encode(64, 48, [p + (255,) for p in want.getdata()])), f"convert: our QOI is the reference encoder's size ({size})")
+    except (OSError, ValueError) as e:
+        check(False, f"convert: opaque.qoi: {e}")
+    if im := load("alpha.tga", "TGA", (64, 48)):
+        px = im.convert("RGBA")
+        check(px.getpixel((8, 20)) == (0, 0, 0, 0) and px.getpixel((50, 20)) == (200, 50, 50, 255),
+              f"convert: PNG -> TGA keeps transparency ({px.getpixel((8, 20))}, {px.getpixel((50, 20))})")
+    wrgb = list(want.getdata())
+    for name in ("rle.png", "top.png", "opaque-from-ppm.png", "ascii-ppm.png"):
+        if im := load(name, "PNG", (64, 48)):
+            check(list(im.convert("RGB").getdata()) == wrgb, f"convert: {name}: the same pixels as the source")
+    if im := load("palette.png", "PNG", (64, 48)):
+        ref = Image.open(src / "palette.tga").convert("RGB")
+        check(list(im.convert("RGB").getdata()) == list(ref.getdata()), "convert: colour-mapped TGA -> PNG: Pillow's colours")
+    if im := load("grey.png", "PNG", (64, 48)):
+        check([p[0] for p in im.convert("RGB").getdata()] == list(want.convert("L").getdata()), "convert: PGM -> PNG, the same greys")
+    if im := load("deep-pgm.png", "PNG", (32, 32)):
+        got = [p[0] for p in im.convert("RGB").getdata()]
+        exp = [round((x * 32 + y) * 64 * 255 / 65535) for y in range(32) for x in range(32)]
+        check(got == exp, "convert: 16-bit PGM -> PNG, scaled to 8 bits")
+    bw = [0 if (x // 4 + y // 4) % 2 else 255 for y in range(20) for x in range(30)]
+    for name in ("ascii-pbm.png", "packed-pbm.png"):
+        if im := load(name, "PNG", (30, 20)):
+            check([p[0] for p in im.convert("RGB").getdata()] == bw, f"convert: {name}: black and white where the PBM says")
+    if im := load("alpha.ppm", "PPM", (64, 48)):
+        check(im.getpixel((8, 20)) == (255, 255, 255) and im.getpixel((50, 20)) == (200, 50, 50),
+              f"convert: PNG -> PPM, transparency white ({im.getpixel((8, 20))}, {im.getpixel((50, 20))})")
+    for name, size, sizes in (("opaque.ico", (48, 48), {(16, 16), (32, 32), (48, 48)}),
+                              ("checker.ico", (256, 256), {(16, 16), (32, 32), (48, 48), (256, 256)})):
+        if not (im := load(name, "ICO", size)):
+            continue
+        check(set(im.ico.sizes()) == sizes, f"convert: {name} holds {sorted(sizes)} ({sorted(im.ico.sizes())})")
+        if name == "opaque.ico":
+            px = im.convert("RGBA")
+            check(px.getpixel((24, 2))[3] == 0 and px.getpixel((24, 45))[3] == 0 and px.getpixel((24, 24))[3] == 255,
+                  f"convert: a 64 x 48 image as a 48 x 48 icon: centred, transparent above and below ({px.getpixel((24, 2))}, {px.getpixel((24, 24))})")
+        else:
+            im.size = (16, 16)
+            im.load()
+            greys = [p[0] for p in im.convert("RGB").getdata()]
+            check(min(greys) >= 96 and max(greys) <= 160,
+                  f"convert: a 1-pixel checkerboard shrunk to 16 x 16 is grey, not aliased ({min(greys)}-{max(greys)})")
+
+
 def make_wasm(work: Path) -> None:
     """add.wasm -> add.wasm.js through tools/wasm2js.py, the same way ops will ship wasm."""
     (work / "add.wasm").write_bytes(ADD_WASM)
@@ -1167,6 +1469,7 @@ def main():
     verify_sums(work, results)
     verify_textenc(work, results)
     verify_brotli(work, results)
+    verify_images(work, results)
 
     print("\n".join(results))
     fails = sum(r.startswith("FAIL") for r in results)

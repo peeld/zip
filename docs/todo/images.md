@@ -1,9 +1,12 @@
 # Image conversion: plan
 
-Status (2026-11-20): planned, nothing built yet. A `convert` command (name
-not final, see open questions) that turns one image into another format, in
-the browser, with nothing uploaded. It's the first op outside archives /
-compression / encodings, and it uses the same shape as they do.
+Status (2026-11-20): **phases 1 and 2 done**: `convert` turns one image
+(PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PNM) into PNG, JPEG, WebP,
+ICO, BMP, TGA, QOI or PPM, in the browser, with nothing uploaded
+([../done/2026-11-20-image-convert.md](../done/2026-11-20-image-convert.md),
+[../done/2026-11-20-image-formats.md](../done/2026-11-20-image-formats.md);
+how it works: [../ref/formats.md](../ref/formats.md), "Images"). The later
+phases below are open.
 
 The rule it relies on was relaxed for it: images (SVG included) may be
 decoded through `<img>` from a `blob:` URL or with `createImageBitmap`, never
@@ -18,8 +21,9 @@ started from a `blob:` URL (the same way `lib/offload.js` starts workers):
 | | Decode (`createImageBitmap`) | Encode (`OffscreenCanvas.convertToBlob`) |
 |---|---|---|
 | PNG, JPEG, WebP | yes (probed) | yes, on the page and in a worker |
-| BMP | expected (not probed) | yes (24-bit: 9270 bytes for 64×48) |
-| GIF | expected, first frame only (not probed) | **no**: silently returns a PNG |
+| BMP | yes (24-bit, tested) | yes (24-bit: 9270 bytes for 64×48); we write our own anyway |
+| GIF, APNG, animated WebP | yes, first frame only (tested) | GIF: **no**, silently returns a PNG |
+| ICO | yes: the largest size (48 of 16/32/48, tested) | not probed |
 | AVIF | expected (not probed) | **no**: silently returns a PNG |
 | JPEG XL | expected no | no (silently PNG) |
 | HEIC, TIFF | expected no (Safari decodes them) | not probed; expect no |
@@ -32,15 +36,23 @@ probe it before relying on it.
 - Canvases of 16384², 32767×1000 and 20000² all encoded in Firefox. Chrome and
   Safari are said to limit the area more (check), so check the size first and
   fail with a clear message.
-- Not checked yet: Chrome and Safari (Safari can't encode WebP, so it gets
-  PNG back), `createImageBitmap` on an SVG Blob (Chrome rejects it; expect to
-  need `<img>` + `img.decode()` + `drawImage` on the page), and whether the
-  default `imageOrientation: 'from-image'` applies EXIF rotation in each
-  browser.
+- Firefox: `imageOrientation: 'from-image'` applies EXIF orientation 6
+  (tested); a 16-bit PNG comes out within 0.5 of value / 257; a cut-off or
+  corrupt image decodes partially instead of failing.
+- Not checked yet: Chrome and Safari (Safari can't encode WebP: `convert`
+  says so), AVIF input (no fixture), `createImageBitmap` on an SVG Blob
+  (Chrome rejects it; expect to need `<img>` + `img.decode()` + `drawImage`
+  on the page).
 - Test fixtures: Pillow 9.0 is installed with webp, webp_anim, jpg, zlib and
   libtiff. ImageMagick, cwebp and exiftool are not.
 
-## Phase 1: PNG / JPEG / WebP / BMP
+## Phase 1: PNG / JPEG / WebP / BMP (done)
+
+Built as planned below, with these differences: BMP is written by us in
+every browser; the output format is kept from one file to the next (a file
+already in the picked format goes to JPEG if it's a PNG, else PNG); `convert`
+only takes images while it's running. The original plan:
+
 
 - **`lib/image.js`** (no DOM; works in a worker): `convertImage(blob,
   { type, quality, background })` returns a Blob. Steps: `createImageBitmap(blob)`,
@@ -81,12 +93,12 @@ probe it before relying on it.
 
 ## Later phases
 
-1. **Resize** (`-w` / `-h` / a percentage): the same pipeline with
-   `drawImage(bitmap, 0, 0, w, h)` (or `createImageBitmap(blob, { resizeWidth,
-   resizeQuality: 'high' })`). Needs arguments. Probably the most wanted follow-up.
-2. **Our own writers in pure JS**, ~50-150 lines each, from the canvas's
-   RGBA pixels (`getImageData`): ICO (PNG inside, several sizes: favicons),
-   QOI, PPM / PGM, TGA. Readers for the same are as small.
+1. **Resize** (`-w` / `-h` / a percentage): the same pipeline through
+   `scaled()` in `lib/image.js` (shrinks by halves; the ICO writer uses it).
+   Needs arguments. Probably the most wanted follow-up.
+2. ~~**Our own writers in pure JS**: ICO, QOI, PPM / PGM, TGA, and readers.~~
+   Done: `lib/imagefmt.js`. Left: PGM / PAM output (grey, 16-bit), RLE TGA
+   output, ICO with BMP entries for Windows XP, .cur hotspots.
 3. **SVG to PNG** (allowed under the `<img>` exception): main thread only (no
    `<img>` in a worker), so cap the pixel size. An SVG without width / height
    needs a size from the user or a default. Load only from a `blob:` URL;
@@ -101,9 +113,8 @@ probe it before relying on it.
 
 ## Open questions
 
-- Name: `convert` (ImageMagick's name, but it's also a Windows system
-  command) vs `image` vs per-format aliases (`topng`, `tojpg`, `towebp`) once
-  the registry has aliases.
+- Name: went with `convert`. Per-format aliases (`topng`, `tojpg`, `towebp`)
+  once the registry has aliases.
 - Several files at once (a folder of HEIC → JPEG is a common wish)?
   `transformOp` is one file in, one out; a batch would want a zip of the outputs.
-- Default for transparency in JPEG: white, or ask?
+- Transparency in JPEG / BMP: white for now; a choice once there are arguments.

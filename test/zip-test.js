@@ -22,6 +22,7 @@ import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
+import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig } from '../public/lib/image.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
 const log = [];
@@ -580,6 +581,15 @@ async function run() {
       && unbase64Name('data.BASE64', { ext: 'pdf' }) === 'data.pdf', 'unbase64Name');
     check(sniffType(png)?.ext === 'png' && sniffType(rnd) === null && sniffType(new TextEncoder().encode('RIFF....WEBPVP8 '))?.ext === 'webp'
       && sniffType(new TextEncoder().encode('xxxxxxxxWEBP')) === null, 'sniffType');
+    {
+      const bmp = new Uint8Array(54);
+      bmp.set([0x42, 0x4d]);
+      bmp[14] = 40;
+      const avif = new TextEncoder().encode('\0\0\0\x1cftypavif\0\0\0\0');
+      check(sniffType(bmp)?.ext === 'bmp' && sniffType(new TextEncoder().encode('BMW cars are fast, they say')) === null
+        && sniffType(avif)?.mime === 'image/avif' && sniffType(new TextEncoder().encode('\0\0\0\x1cftypisom'))?.ext === 'mp4',
+        'sniffType: BMP (with a real DIB header), AVIF before mp4');
+    }
     check(extForMime('image/svg+xml') === 'svg' && extForMime('application/pdf') === 'pdf' && extForMime('image/png') === 'png'
       && extForMime('application/vnd.ms-excel') === null, 'extForMime');
   }
@@ -1138,6 +1148,93 @@ async function run() {
       && parseExpected('abc') === null, 'parseExpected');
   }
 
+  // 6i. Images: header info, and conversions in a worker (checked with Pillow by run_tests.py).
+  if (manifest.images) {
+    const img = (n) => fx2(`img/${n}`);
+    const info = async (n) => imageInfo(await img(n));
+    const fmt = (i) => `${i.format} ${i.width}x${i.height}${i.alpha ? ' alpha' : ''}${i.animated ? ' anim' : ''} d${i.depth} o${i.orientation} [${i.meta}]`;
+    const infos = {};
+    for (const n of ['opaque.png', 'opaque.bmp', 'photo.webp', 'alpha.png', 'rotated.jpg', 'anim.gif', 'anim.png', 'anim.webp',
+      'deep.png', 'lossless.webp', 'icons.ico', 'alpha.qoi', 'alpha.tga', 'rle.tga', 'palette.tga', 'opaque.ppm', 'deep.pgm',
+      'ascii.ppm', 'packed.pbm', 'alpha.pam']) infos[n] = await info(n);
+    const expect = {
+      'opaque.png': 'png 64x48 d8 o1 []', 'opaque.bmp': 'bmp 64x48 d8 o1 []', 'photo.webp': 'webp 64x48 d8 o1 []',
+      'alpha.png': 'png 64x48 alpha d8 o1 [text]', 'rotated.jpg': 'jpg 20x40 d8 o6 [EXIF,GPS location,ICC profile]',
+      'anim.gif': 'gif 32x32 anim d8 o1 []', 'anim.png': 'png 32x32 anim d8 o1 []', 'deep.png': 'png 32x32 d16 o1 []',
+      'icons.ico': 'ico 48x48 alpha d8 o1 []', 'alpha.qoi': 'qoi 40x24 alpha d8 o1 []', 'alpha.tga': 'tga 40x24 alpha d8 o1 []',
+      'rle.tga': 'tga 64x48 d8 o1 []', 'palette.tga': 'tga 64x48 d8 o1 []', 'opaque.ppm': 'pnm 64x48 d8 o1 []',
+      'deep.pgm': 'pnm 32x32 d16 o1 []', 'ascii.ppm': 'pnm 64x48 d8 o1 [comment]', 'packed.pbm': 'pnm 30x20 d1 o1 []',
+      'alpha.pam': 'pnm 40x24 alpha d8 o1 []',
+    };
+    for (const [n, want] of Object.entries(expect)) check(fmt(infos[n]) === want, `imageInfo: ${n} (${fmt(infos[n])})`);
+    check(infos['anim.webp'].format === 'webp' && infos['anim.webp'].animated && infos['anim.webp'].width === 32,
+      `imageInfo: animated WebP (${fmt(infos['anim.webp'])})`);
+    check(infos['lossless.webp'].alpha && infos['lossless.webp'].width === 48 && infos['lossless.webp'].height === 32,
+      `imageInfo: lossless WebP with alpha (${fmt(infos['lossless.webp'])})`);
+    check(infos['icons.ico'].sizes === 3, 'imageInfo: ICO counts its sizes');
+    check(['opaque.ppm', 'deep.pgm', 'packed.pbm', 'alpha.pam', 'rle.tga', 'alpha.qoi'].map((n) => infos[n].label).join() === 'PPM,PGM,PBM,PAM,TGA,QOI',
+      'imageInfo: PNM / TGA / QOI labels');
+    // A TGA has no magic number: without the TGA 2.0 footer it takes a .tga name.
+    const bare = (await img('rle.tga')).slice(0, -26);
+    let bareMsg = '';
+    try { await imageInfo(bare); } catch (e) { bareMsg = e.message; }
+    check(bareMsg.startsWith('not an image') && (await imageInfo(new File([bare], 'x.TGA'))).format === 'tga',
+      'imageInfo: a TGA without its footer is one only by name');
+    const bareTga = await streamToBlob(offload('image', new File([bare], 'x.tga'), { type: 'png' })).catch((e) => e);
+    const sig = bareTga instanceof Blob ? new Uint8Array(await bareTga.slice(0, 4).arrayBuffer()) : [];
+    check(sig[1] === 0x50 && sig[2] === 0x4e && sig[3] === 0x47, `convert: a footerless TGA by its name, through offload (${bareTga.message || sig})`);
+    check(imageNotes({ ...infos['opaque.ppm'], width: 64, height: 48 }, 'ico').join('; ') === '16, 32, 48 px icons; padded to a square'
+      && imageNotes(infos['icons.ico'], 'ico').join('; ') === '16, 32, 48 px icons; made again from the largest of its 3 sizes'
+      && imageNotes(infos['alpha.qoi'], 'ppm')[0] === 'any transparency becomes white'
+      && imageNotes(infos['deep.pgm'], 'tga').join('; ') === '16-bit: written as 8-bit; lossless', 'imageNotes: ICO, PPM, TGA');
+    const notes = imageNotes(infos['rotated.jpg'], 'png').join('; ');
+    check(notes === 'turned upright from its EXIF orientation; EXIF, GPS location dropped; ICC colour profile dropped (colours converted to sRGB); lossless',
+      `imageNotes: rotated.jpg as PNG (${notes})`);
+    check(imageNotes(infos['alpha.png'], 'jpeg').join('; ') === 'any transparency becomes white; text dropped; lossy, quality 90'
+      && imageNotes(infos['alpha.png'], 'webp').join('; ') === 'text dropped; lossy, quality 90'
+      && imageNotes(infos['anim.gif'], 'png')[0] === 'only the first frame is kept'
+      && imageNotes(infos['deep.png'], 'png')[0] === '16-bit: written as 8-bit', 'imageNotes: transparency, frames, depth');
+    let msg = '';
+    try { await imageInfo(new Blob(['hello, world'])); } catch (e) { msg = e.message; }
+    check(msg.startsWith('not an image this can convert'), `imageInfo: rejects a non-image (${msg})`);
+    check(convertedName('Photo.JPG', 'png') === 'Photo.png' && convertedName('scan', 'jpeg') === 'scan.jpg'
+      && convertedName('a.b.webp', 'bmp') === 'a.b.bmp', 'convertedName');
+    check(tooBig(16384, 16384) === null && /megapixels/.test(tooBig(20000, 20000)) && /a side/.test(tooBig(40000, 10)), 'tooBig');
+    check(await canWrite('image/png') && await canWrite('image/jpeg') && await canWrite('image/bmp') && !(await canWrite('image/avif'))
+      && !(await canWrite('image/gif')), 'canWrite: PNG, JPEG, BMP yes; AVIF, GIF no (the canvas silently gives PNG)');
+    msg = '';
+    try { await convertImage(await img('opaque.png'), { type: 'avif' }); } catch (e) { msg = e.message; }
+    check(msg === "can't write avif images", `convertImage: refuses an output it can't write (${msg})`);
+    msg = '';
+    // A PNG signature and no header. (A cut-off or damaged image isn't an error: the browser
+    // decodes what it can, as when showing it.)
+    try { await convertImage(new Blob(['\x89PNG\r\n\x1a\n', 'x'.repeat(200)])); } catch (e) { msg = e.message; }
+    check(msg.startsWith("can't decode this image"), `convertImage: a broken image fails clearly (${msg})`);
+
+    const jobs = offloadStats.jobs;
+    const conversions = [
+      ['opaque.png', 'bmp', 'opaque.bmp'], ['opaque.bmp', 'png', 'opaque-from-bmp.png'], ['photo.webp', 'png', 'photo.png'],
+      ['alpha.png', 'jpeg', 'alpha.jpg'], ['alpha.png', 'webp', 'alpha.webp'], ['rotated.jpg', 'png', 'rotated.png'],
+      ['anim.gif', 'png', 'anim-gif.png'], ['anim.png', 'png', 'anim-png.png'], ['anim.webp', 'png', 'anim-webp.png'],
+      ['deep.png', 'png', 'deep.png'], ['lossless.webp', 'bmp', 'lossless.bmp'], ['icons.ico', 'png', 'icons.png'],
+      ['alpha.qoi', 'tga', 'alpha-from-qoi.tga'], ['alpha.qoi', 'png', 'alpha-from-qoi.png'], ['alpha.tga', 'qoi', 'alpha.qoi'],
+      ['alpha.pam', 'qoi', 'pam.qoi'], ['opaque.png', 'qoi', 'opaque.qoi'], ['alpha.png', 'tga', 'alpha.tga'],
+      ['rle.tga', 'png', 'rle.png'], ['top.tga', 'png', 'top.png'], ['palette.tga', 'png', 'palette.png'],
+      ['opaque.ppm', 'png', 'opaque-from-ppm.png'], ['ascii.ppm', 'png', 'ascii-ppm.png'], ['grey.pgm', 'png', 'grey.png'],
+      ['deep.pgm', 'png', 'deep-pgm.png'], ['ascii.pbm', 'png', 'ascii-pbm.png'], ['packed.pbm', 'png', 'packed-pbm.png'],
+      ['alpha.png', 'ppm', 'alpha.ppm'], ['opaque.png', 'ico', 'opaque.ico'], ['checker.png', 'ico', 'checker.ico'],
+    ];
+    for (const [src, type, out] of conversions) {
+      try {
+        const blob = await streamToBlob(offload('image', await img(src), { type }));
+        await post(`/upload/img-out/${out}`, blob);
+      } catch (e) {
+        check(false, `convert: ${src} -> ${type}: ${e.message}`);
+      }
+    }
+    check(offloadStats.jobs - jobs === conversions.length, `convert: the conversions ran in a worker (${offloadStats.jobs - jobs} jobs)`);
+  }
+
   // 7a. Routing dropped files to an op.
   {
     const f = (name, type = '') => ({ path: name, file: new File(['x'], name, { type }) });
@@ -1190,6 +1287,12 @@ async function run() {
     check(id([f('a.b32')]) === 'decode' && id([f('m.QP')]) === 'decode' && id([f('x.a85')]) === 'decode' && id([f('q.urlenc')]) === 'decode'
       && id([jpg], 'encode') === 'encode' && id([jpg, jpg], 'encode') === 'zip' && id([f('a.txt')]) === 'zip',
       'pickOp: .b32/.a85/.qp/.urlenc -> decode, encode takes one file while running');
+    check(id([jpg]) === 'zip' && id([jpg], 'convert') === 'convert' && by('x.dat', 'png', 'convert') === 'convert'
+      && by('x.dat', 'bmp', 'convert') === 'convert' && by('x.png', 'zip', 'convert') === 'unzip' && id([jpg, jpg], 'convert') === 'zip'
+      && id([f('a.txt')], 'convert') === 'zip' && id([f('fav.ico')], 'convert') === 'convert' && by('x.dat', 'png') === 'zip'
+      && by('x.dat', 'qoi', 'convert') === 'convert' && id([f('a.tga')], 'convert') === 'convert' && id([f('scan.pgm')], 'convert') === 'convert'
+      && id([f('a.ppm')]) === 'zip',
+      'pickOp: convert takes one image only while running; images still go to zip otherwise');
     check(id([jpg, zipF], 'hash') === 'hash' && id([f('SHA256SUMS'), jpg], 'hash') === 'hash' && id([f('SHA256SUMS')]) === 'zip',
       'pickOp: hash takes any files while running');
   }
@@ -1518,6 +1621,33 @@ async function run() {
           'decode op: picking another format re-checks the file');
         const { text } = await make(root);
         check(text.startsWith('hello, world'), 'decode op: decodes with the picked format');
+      }
+      if (op.id === 'convert' && manifest.images) {
+        const sel = root.querySelector('select');
+        const text = () => root.querySelector('.muted')?.textContent || '';
+        const go = root.querySelector('button.primary');
+        const add = async (name, as = name) => api.addFiles([{ path: as, file: new File([await fx2(`img/${name}`)], as) }]);
+        await add('alpha.png');
+        check(sel.value === 'jpeg' && root.querySelector('input').value === 'alpha.jpg'
+          && text() === 'PNG, 64 × 48 (alpha). As JPEG: any transparency becomes white; text dropped; lossy, quality 90.',
+          `convert op: a PNG goes to JPEG and says what it loses (${sel.value}; ${text()})`);
+        const { row } = await make(root);
+        check(row.startsWith('alpha.jpg') && api.products.items[0]?.blob.type === 'image/jpeg', `convert op: makes the JPEG (${row})`);
+        await add('rotated.jpg', 'IMG_1234.JPG');
+        check(sel.value === 'png' && root.querySelector('input').value === 'IMG_1234.png' && text().includes('GPS location dropped')
+          && text().startsWith('JPEG, 20 × 40.'), `convert op: a JPEG goes to PNG (${sel.value}; ${text()})`);
+        await add('photo.webp');
+        check(sel.value === 'png', 'convert op: the next file keeps the picked format');
+        sel.value = 'webp';
+        sel.dispatchEvent(new Event('change'));
+        await sleep(100);
+        check(root.querySelector('input').value === 'photo.webp' && text().includes('As WebP: lossy'), 'convert op: picking WebP re-checks the file');
+        const huge = new Uint8Array(await (await fx2('img/opaque.png')).slice(0, 33).arrayBuffer());
+        new DataView(huge.buffer).setUint32(16, 40000);
+        await api.addFiles([{ path: 'huge.png', file: new File([huge], 'huge.png') }]);
+        check(root.textContent.includes('huge.png: PNG, too big to convert: 40000 × 48') && go.disabled, 'convert op: refuses an image too big for a canvas');
+        await api.addFiles([{ path: 'x.png', file: new File(['not really'], 'x.png') }]);
+        check(root.textContent.includes('not an image this can convert') && go.disabled, 'convert op: rejects a non-image');
       }
       if (op.id === 'gzip') {
         await api.addFiles([{ path: 'a.txt', file: new File(['x'], 'a.txt') }]);

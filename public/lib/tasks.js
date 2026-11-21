@@ -1,4 +1,4 @@
-// The decode jobs lib/offload.js can run in a Web Worker (or on the page when
+// The decode (and image conversion) jobs lib/offload.js can run in a Web Worker (or on the page when
 // a worker can't start). Shared by both sides, so a worker only ever runs one
 // of these: it never takes a module URL or code from a message. No DOM.
 //
@@ -16,4 +16,10 @@ export const TASKS = {
   zip: async (blob, entry) => (await import('./zip.js')).decodeEntryData(blob, entry),
   /** One 7z folder's whole output; `blob` is the .7z, args the folder from read7z. */
   '7z': async (blob, folder) => (await import('./7z.js')).folderStream(blob, folder),
+  /** An image converted to another format; args { type, quality } for lib/image.js convertImage. */
+  image: async (blob, args, onBytes) => {
+    const out = await (await import('./image.js')).convertImage(blob, args || {});
+    onBytes(blob.size); // decoding has no progress to report: all at once
+    return out.stream();
+  },
 };

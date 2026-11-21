@@ -10,6 +10,10 @@ const TYPES = [
   ['jpg', 'image/jpeg', 0, [0xff, 0xd8, 0xff]],
   ['gif', 'image/gif', 0, ascii('GIF8')],
   ['webp', 'image/webp', 8, ascii('WEBP')],
+  ['bmp', 'image/bmp', 0, ascii('BM')], // checked further below: "BM" alone is too common
+  ['avif', 'image/avif', 4, ascii('ftypavif')],
+  ['avif', 'image/avif', 4, ascii('ftypavis')], // an AVIF sequence
+  ['qoi', 'image/qoi', 0, ascii('qoif')],
   ['pdf', 'application/pdf', 0, ascii('%PDF-')],
   ['zip', 'application/zip', 0, ascii('PK\x03\x04')],
   ['zip', 'application/zip', 0, ascii('PK\x05\x06')], // empty zip
@@ -35,6 +39,11 @@ const TYPES = [
   ['mp4', 'video/mp4', 4, ascii('ftyp')],
 ];
 
+// A BMP: "BM", reserved zeros, then a known DIB header size.
+const BMP_HEADERS = [12, 16, 40, 52, 56, 64, 108, 124];
+const isBmp = (b) => b.length >= 18 && b[6] === 0 && b[7] === 0 && b[8] === 0 && b[9] === 0
+  && b[16] === 0 && b[17] === 0 && BMP_HEADERS.includes(b[14] | (b[15] << 8));
+
 /** { ext, mime } for bytes that start with a known magic number, else null. Give it at least 262 bytes for tar. */
 export function sniffType(b) {
   for (const [ext, mime, at, sig] of TYPES) {
@@ -42,6 +51,7 @@ export function sniffType(b) {
       if (ext === 'webp' || ext === 'wav') { // RIFF container
         if (!ascii('RIFF').every((x, i) => b[i] === x)) continue;
       }
+      if (ext === 'bmp' && !isBmp(b)) continue;
       return { ext, mime };
     }
   }

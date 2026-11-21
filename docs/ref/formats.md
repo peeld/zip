@@ -75,7 +75,8 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
     allows a worker from one of our own URLs (which would get no CSP on Pages),
     so we never start one that way.
   - **What runs there:** only the jobs in `lib/tasks.js` (unxz, unzstd,
-    bunzip2, a zip entry for methods 12/14/93/95, a 7z folder). A message names
+    bunzip2, a zip entry for methods 12/14/93/95, a 7z folder, an image
+    conversion). A message names
     a task; it never carries a module URL or code. `offload(task, blob, args)`
     returns a ReadableStream. The Blob is sent (cheap: no copy), chunks come
     back transferred, and the worker decodes one chunk ahead of the reader.
@@ -546,9 +547,64 @@ doesn't check the CRC.
   matches (`*.sha256`, `SHA256SUMS`, `CHECKSUMS`, `*.sfv`, …), it's at most
   16 MB, and at least one line parses. Otherwise it's hashed like any file.
 
+## Images (`lib/image.js`)
+- **The browser's codecs, no library.** `convertImage(blob, { type })`:
+  `createImageBitmap` (with `imageOrientation: 'from-image'`, so EXIF
+  rotation is applied), an `OffscreenCanvas` the same size, then
+  `convertToBlob`. Both work in a worker, so it runs as the `image` task in
+  `lib/tasks.js`. JPEG and BMP get white behind the image first
+  (`alpha: false` context). Plan and later phases (resize, SVG, GIF
+  writing): [../todo/images.md](../todo/images.md).
+- **`convertToBlob` never fails for a type it can't write:** it returns a PNG.
+  `canWrite(mime)` encodes a 1×1 canvas once per type and compares the
+  result's type, and `convertImage` checks the real result too. Firefox 159
+  writes PNG, JPEG, WebP and BMP, not GIF or AVIF.
+- **BMP is ours** (24-bit, bottom-up, BITMAPINFOHEADER): Chrome's canvas
+  doesn't write BMP, and ours is the same everywhere.
+- **Our own formats (`lib/imagefmt.js`)** work on RGBA pixels, with no
+  canvas or DOM. `WRITERS[id](rows, width, height, bg)`: BMP, TGA (32-bit
+  BGRA, uncompressed, top-left origin, TGA 2.0 footer), QOI (the reference
+  encoder's choices byte for byte; the header says 4 channels only if a
+  pixel isn't opaque) and PPM (P6, 8-bit). `rows(top, n)` is called 256 rows
+  at a time, so a canvas is read back in strips rather than all at once.
+  BMP and PPM flatten alpha onto `bg` themselves. `READERS[id](bytes,
+  check)`: QOI, PNM (P1-P6, ASCII and binary, any maxval up to 65535,
+  comments; P7 PAM with 1-4 channels) and TGA (types 1-3 and their RLE
+  forms 9-11; 8/15/16/24/32-bit, colour maps, any origin). They return the
+  pixels; `convertImage` writes them straight out with one of ours (exact,
+  transparent pixels' colours included) or turns them into an ImageBitmap
+  for the browser's encoders. A cut-off file decodes as far as it goes.
+- **ICO is put together in `lib/image.js`:** a PNG per size (16, 32, 48,
+  256, up to the image's longer side; a smaller image gives one icon its own
+  size), centred on a transparent square when it isn't one. PNG entries are
+  what every browser and Windows since Vista read. `scaled(src, w, h)`
+  shrinks by halves before the last step, since one big `drawImage` step
+  skips pixels (a 1-pixel checkerboard comes out grey, as it should, not
+  black or white); it's there for resize too.
+- **Sniffing:** QOI has a magic number (`qoif`, in `sniffType`). ICO, PNM
+  and TGA don't, so `sniffImage` in `lib/image.js` checks them: PNM by its
+  `P1`-`P7` header, TGA by a plausible header plus the TGA 2.0 footer
+  (`TRUEVISION-XFILE.`) or a `.tga` name. TGA alpha: a 32-bit TGA (or one
+  with 16-bit pixels and an alpha bit in the descriptor) has alpha unless
+  every alpha byte is 0, which some writers leave.
+- **`imageInfo(blob)`** reads the first 1 MB, without decoding: format,
+  displayed size (JPEG: after EXIF orientation), whether it can hold alpha,
+  animation (APNG `acTL`, a second GIF image, the WebP VP8X flag, AVIF
+  `avis`), bit depth, and metadata (EXIF with or without GPS, XMP, ICC, IPTC,
+  PNG text, comments). `imageNotes(info, type)` turns that into what the op
+  says will be lost. Only JPEG orientation is promised: browsers differ on
+  EXIF in PNG / WebP. ICO has no real magic number, so `isIco` is here, not
+  in `sniffType`. AVIF's header is found by scanning the `meta` box
+  (`ispe`, `auxiliary:alpha`): untested, no AVIF fixture (Pillow 9 can't write it).
+- **Size limit:** 32767 a side and 16384² pixels (Chrome's canvas). Checked
+  from the header in `inspect` and again after decoding.
+- **Damaged input:** Firefox's decoder gives back whatever it could decode
+  of a cut-off or corrupt image (as `<img>` would show it) instead of an
+  error; only a file with no usable header fails.
+
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
-webp, pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, rpm, deb, a (ar), cpio, wasm, mp3,
+webp, bmp (`BM` and a known DIB header size), avif (`ftypavif` / `ftypavis`, before mp4), pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, rpm, deb, a (ar), cpio, wasm, mp3,
 ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime type to an
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
 `tar.gz` / `cpio.gz` (or `.xz`, `.zst`, `.bz2`) for a gzip (or xz, zstd, bzip2) whose first decompressed
