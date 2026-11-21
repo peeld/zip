@@ -49,16 +49,42 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
   - Rejected: `connect-src 'self'` (normal `.wasm` files, but it weakens the
     "sends nothing" rule, even if only to our own origin), and importing
     `.wasm` as an ES module (not supported widely enough yet).
-- **Web Workers:** a worker started from a URL takes its CSP from its own HTTP
-  response, not from the page's `<meta>`. On GitHub Pages that response has no
-  CSP, so a worker would be unrestricted (it could `fetch` anywhere). Before
-  putting wasm (or anything) in a worker, either serve with headers (Apache /
-  CloudFront) or keep the work on the page.
+- **Web Workers** (`lib/offload.js`, `lib/worker.js`, `lib/tasks.js`): a
+  worker started from a URL takes its CSP from its own HTTP response, not from
+  the page's `<meta>`. On GitHub Pages that response has no CSP, so such a
+  worker would be unrestricted (it could `fetch` anywhere). So workers start
+  from a `blob:` URL whose only line imports `lib/worker.js`: a `blob:` worker
+  inherits the page's policy, `connect-src 'none'` included.
+  - **CSP:** `worker-src 'self' blob:`. `blob:` lets the page start the
+    worker. `'self'` is needed because Firefox (159) checks the static
+    `import`s inside a module worker against `worker-src`, not `script-src`;
+    with `worker-src blob:` alone the worker's imports fail. `'self'` also
+    allows a worker from one of our own URLs (which would get no CSP on Pages),
+    so we never start one that way.
+  - **What runs there:** only the jobs in `lib/tasks.js` (unxz, unzstd,
+    bunzip2, a zip entry for methods 12/14/93/95, a 7z folder). A message names
+    a task; it never carries a module URL or code. `offload(task, blob, args)`
+    returns a ReadableStream. The Blob is sent (cheap: no copy), chunks come
+    back transferred, and the worker decodes one chunk ahead of the reader.
+    Progress (`onBytes`) is posted back. Cancelling a stream terminates its
+    worker (the quickest way to stop it decoding). A finished worker is kept for
+    the next job (up to 2).
+  - **On the page instead:** inputs under 128 KB (starting a worker isn't
+    free: a non-solid 7z has one folder per file), peeks (`sniffFile`, the
+    ops' `inspect`), headers (`folderBytes`), code already in a worker, and
+    every job once a worker has failed to start (an older browser, a stricter
+    CSP).
+  - Measured in headless Firefox while decoding the 3 MB `text.xz`: the longest
+    gap between timer ticks is ~5 ms in a worker and ~100 ms on the page.
 - **Tested:** `run_tests.py` serves `/csp-check.html` with `index.html`'s own
   `<meta>` CSP and runs `test/wasm-csp.js` in it. A hand-written `add.wasm` goes
   through `tools/wasm2js.py` and `core/wasm.js`. Under the same policy, fetch
   and eval must stay blocked, and wasm must be blocked once `'wasm-unsafe-eval'`
-  is removed.
+  is removed. On the same page, `offload` decodes an .xz in a worker, and
+  `test/worker-probe.js` (started the same way) shows a worker can import our
+  modules but can't fetch or eval. With `worker-src` removed (`?noworker`) it
+  decodes on the page instead. The rest of the suite runs with
+  `setOffloadThreshold(0)`, so every JS decode there goes through a worker.
 - Browsers: Chrome 97+, Firefox 102+, Safari 16+ support `'wasm-unsafe-eval'`.
 
 ## zip (`lib/zip.js`)
@@ -143,8 +169,8 @@ doesn't check the CRC.
   magic number: `isLzmaAlone` accepts a props byte < 225, a 2^n or 3·2^n
   dictionary, a plausible size and the range coder's leading zero byte.
 - **Speed** (headless Firefox, 3 MB of text): about 15 MB/s of output.
-  Fine for packages and source tarballs. A 1 GB image would take a minute
-  (see the TODO for a Web Worker / speed-up).
+  Fine for packages and source tarballs. A 1 GB image would take a minute;
+  it runs in a Web Worker (see "Web Workers" above), so the page stays usable.
 - `.tar.xz` and `.cpio.xz` go through `lib/decompress.js`: `compression(blob)`
   says `'gzip'` / `'xz'` / `'zstd'` / null and `decompress(blob, kind)` gives the
   stream. `readTar` / `readCpio` return that kind as `compressed` (it was a

@@ -12,6 +12,7 @@
 // (Deflate64, PPMd, …).
 
 import { crc32Update } from './crc32.js';
+import { offload } from './offload.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -311,14 +312,20 @@ export async function openEntry(blob, entry, onBytes) {
   if (lh.getUint32(0, true) !== SIG_LOCAL) throw new Error(`${entry.name}: corrupt local header`);
   const start = entry.offset + 30 + lh.getUint16(26, true) + lh.getUint16(28, true);
   const data = blob.slice(start, start + entry.compressedSize);
-  return (await decoded(data, entry)).pipeThrough(crcTap({ crc: MAX32, size: 0 }, onBytes, entry.crc));
+  // Stored and Deflate are native; the others are our JS decoders, run in a worker.
+  const decoded = entry.method === 0 ? data.stream()
+    : entry.method === 8 ? data.stream().pipeThrough(new DecompressionStream('deflate-raw'))
+      : offload('zip', data, { method: entry.method, size: entry.size, name: entry.name });
+  return decoded.pipeThrough(crcTap({ crc: MAX32, size: 0 }, onBytes, entry.crc));
 }
 
-/** An entry's compressed bytes (`data`) as a stream of its uncompressed bytes. */
-async function decoded(data, entry) {
+/**
+ * An entry's compressed bytes (`data`) as a stream of its uncompressed bytes,
+ * for the methods with JS decoders. `entry` needs { method, size, name }.
+ * Through lib/offload.js (the `zip` task), not called directly.
+ */
+export async function decodeEntryData(data, entry) {
   switch (entry.method) {
-    case 0: return data.stream();
-    case 8: return data.stream().pipeThrough(new DecompressionStream('deflate-raw'));
     case 12: return (await import('./bzip2.js')).bunzip2(data);
     case 93: return (await import('./zstd.js')).unzstd(data);
     case 95: return (await import('./xz.js')).unxz(data);

@@ -6,6 +6,7 @@ import { transformOp } from '../../core/transform.js';
 import { readStart } from '../../core/streams.js';
 import { unzstd, zstdInfo, unzstdName } from '../../lib/zstd.js';
 import { sniffType } from '../../lib/magic.js';
+import { offload } from '../../lib/offload.js';
 
 async function inspect(file) {
   const i = await zstdInfo(file);
@@ -24,5 +25,6 @@ export const mount = transformOp({
   verb: 'Decompress',
   inspect,
   outName: (file, info) => unzstdName(file.name, info.type),
-  transform: ({ file, onBytes }) => unzstd(file, { onBytes }),
+  // In a worker (lib/offload.js), so a big file doesn't freeze the page.
+  transform: ({ file, onBytes }) => offload('unzstd', file, null, { onBytes }),
 });

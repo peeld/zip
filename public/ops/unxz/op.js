@@ -6,6 +6,7 @@ import { transformOp } from '../../core/transform.js';
 import { readStart } from '../../core/streams.js';
 import { unxz, xzInfo, isXz, lzmaInfo, unxzName } from '../../lib/xz.js';
 import { sniffType } from '../../lib/magic.js';
+import { offload } from '../../lib/offload.js';
 
 async function inspect(file) {
   const xz = isXz(new Uint8Array(await file.slice(0, 6).arrayBuffer()));
@@ -33,5 +34,6 @@ export const mount = transformOp({
   verb: 'Decompress',
   inspect,
   outName: (file, info) => unxzName(file.name, info.type),
-  transform: ({ file, onBytes }) => unxz(file, { onBytes }),
+  // In a worker (lib/offload.js), so a big file doesn't freeze the page.
+  transform: ({ file, onBytes }) => offload('unxz', file, null, { onBytes }),
 });

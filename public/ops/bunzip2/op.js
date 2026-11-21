@@ -4,6 +4,7 @@ import { transformOp } from '../../core/transform.js';
 import { readStart } from '../../core/streams.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../../lib/bzip2.js';
 import { sniffType } from '../../lib/magic.js';
+import { offload } from '../../lib/offload.js';
 
 async function inspect(file) {
   const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
@@ -21,5 +22,6 @@ export const mount = transformOp({
   verb: 'Decompress',
   inspect,
   outName: (file, info) => bunzip2Name(file.name, info.type),
-  transform: ({ file, onBytes }) => bunzip2(file, { onBytes }),
+  // In a worker (lib/offload.js), so a big file doesn't freeze the page.
+  transform: ({ file, onBytes }) => offload('bunzip2', file, null, { onBytes }),
 });

@@ -14,6 +14,7 @@ import { blobReader, streamReader, toStream } from './source.js';
 import { CRC_INIT, crc32Update, crc32Final } from './crc32.js';
 import { lzma2Chunks, lzma2DictSize, lzmaRaw, parseProps } from './lzma.js';
 import { deltaFilter, x86Filter } from './filters.js';
+import { offload } from './offload.js';
 
 const SIGNATURE = [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c];
 export const is7z = (b) => b.length >= 6 && SIGNATURE.every((x, i) => b[i] === x);
@@ -363,6 +364,16 @@ async function* decodeFolder(blob, f) {
   if (f.crc !== null && crc32Final(crc) !== f.crc) throw new Error('7z CRC check failed: the data is corrupt');
 }
 
+/** A folder's output as a stream. Through lib/offload.js (the `7z` task), not called directly. */
+export function folderStream(blob, f) {
+  return toStream(decodeFolder(blob, f));
+}
+
+/** A folder's output, decoded in a worker when it's big enough. */
+function folderOutput(blob, f) {
+  return offload('7z', blob, f, { size: f.packs.reduce((n, p) => n + p.size, 0) });
+}
+
 /** All of a (small) folder's output in one array: for an encoded header. */
 async function folderBytes(blob, f) {
   const out = new Uint8Array(f.size);
@@ -449,7 +460,7 @@ export async function read7z(blob) {
 /** One file entry (from read7z) as a stream: decodes its folder up to it. */
 export function open7zEntry(blob, archive, entry) {
   if (entry.folder < 0) return toStream((async function* () {})());
-  const src = streamReader(toStream(decodeFolder(blob, archive.folders[entry.folder])), cutOff);
+  const src = streamReader(folderOutput(blob, archive.folders[entry.folder]), cutOff);
   async function* one() {
     await src.skip(entry.offset);
     yield* fileChunks(src, entry.size, entry.crc, entry.name);
@@ -470,7 +481,7 @@ export async function* sevenZipWalk(blob, archive) {
       if (entry.folder !== cur) {
         src?.close();
         cur = entry.folder;
-        src = streamReader(toStream(decodeFolder(blob, archive.folders[cur])), cutOff);
+        src = streamReader(folderOutput(blob, archive.folders[cur]), cutOff);
       }
       // Files come in folder order, so this only skips what a cancelled stream left unread.
       if (src.pos > entry.offset) throw corrupt('files out of order');

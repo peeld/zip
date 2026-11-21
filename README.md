@@ -62,8 +62,9 @@ Actions**.
 Pages can't set response headers, so `.htaccess` is ignored there. The CSP
 and referrer policy are also `<meta>` tags in `index.html`. `frame-ancestors`
 and `Permissions-Policy` only work as headers, so Pages doesn't get them.
-Web Workers don't inherit a `<meta>` CSP either, so on Pages a worker would
-have no CSP (see `docs/ref/formats.md`, "WebAssembly").
+A worker started from a URL wouldn't get the `<meta>` CSP either, so the
+decoders' workers start from `blob:` URLs, which inherit it (see
+`docs/ref/formats.md`, "Web Workers").
 
 ## Test
 

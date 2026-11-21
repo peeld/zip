@@ -192,6 +192,10 @@ Rules:
     `core/wasm.js`, inside `run` so it's only downloaded when used. Commit the
     `.wasm` source or a note on how it was built next to the `.wasm.js`. See
     [formats.md](formats.md), "WebAssembly".
+- Slow JS decoders: add them to `lib/tasks.js` and call
+  `offload(task, blob, args)` from `lib/offload.js`, so they run in a Web
+  Worker. Native streams (`DecompressionStream`) don't need it. See
+  [formats.md](formats.md), "Web Workers".
 - Large files: work on streams (`Blob.stream()`, `TransformStream`) and pass
   `out.write()` a ReadableStream, so nothing has to fit in memory. Avoid
   `new Response(stream).blob()`: Firefox replaces the stream's error with a

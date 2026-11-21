@@ -1,9 +1,11 @@
 // Which compression wraps an archive, and a stream of the data inside it.
 // Shared by the tar and cpio readers (.tar.gz, .tar.xz, .cpio.zst, …). No DOM.
 // gzip is native (lib/gzip.js); the xz, zstd and bzip2 decoders (lib/xz.js,
-// lib/zstd.js, lib/bzip2.js) are only downloaded when such a file is opened.
+// lib/zstd.js, lib/bzip2.js) are only downloaded when such a file is opened,
+// and run in a Web Worker (lib/offload.js).
 
 import { isGzip, gunzip } from './gzip.js';
+import { offload } from './offload.js';
 
 const XZ = [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00];
 const ZSTD = [0x28, 0xb5, 0x2f, 0xfd];
@@ -21,24 +23,11 @@ export async function compression(blob) {
   return null;
 }
 
-/** A stream that runs `start()` (which resolves to a stream) on first read. */
-function lazyStream(start) {
-  let reader = null;
-  const open = async () => (reader ??= (await start()).getReader());
-  return new ReadableStream({
-    async pull(ctl) {
-      const { value, done } = await (await open()).read();
-      if (done) ctl.close(); else ctl.enqueue(value);
-    },
-    cancel(why) { return reader?.cancel(why); },
-  });
-}
-
 /** The decompressed bytes of a Blob compressed with `kind` (from compression(); also 'lzma', a legacy .lzma, which unxz reads). */
 export function decompress(blob, kind) {
   if (kind === 'gzip') return gunzip(blob);
-  if (kind === 'xz' || kind === 'lzma') return lazyStream(async () => (await import('./xz.js')).unxz(blob));
-  if (kind === 'zstd') return lazyStream(async () => (await import('./zstd.js')).unzstd(blob));
-  if (kind === 'bzip2') return lazyStream(async () => (await import('./bzip2.js')).bunzip2(blob));
+  if (kind === 'xz' || kind === 'lzma') return offload('unxz', blob);
+  if (kind === 'zstd') return offload('unzstd', blob);
+  if (kind === 'bzip2') return offload('bunzip2', blob);
   throw new Error(`unknown compression: ${kind}`);
 }

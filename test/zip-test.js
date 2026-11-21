@@ -21,6 +21,7 @@ import { unzstd, zstdInfo, unzstdName, isZstd, xxh64 } from '../public/lib/zstd.
 import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
+import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
 const log = [];
@@ -1528,8 +1529,9 @@ async function run() {
   }
 }
 
-// WebAssembly under the real CSP: /csp-check.html carries index.html's <meta> CSP
-// (?nowasm drops 'wasm-unsafe-eval', to show the check can fail).
+// WebAssembly and Web Workers under the real CSP: /csp-check.html carries index.html's <meta> CSP
+// (?nowasm drops 'wasm-unsafe-eval', ?noworker drops worker-src, to show the checks can fail).
+// The page can't fetch, so it's sent an .xz and its expected bytes.
 async function cspCheck(query = '') {
   const f = document.createElement('iframe');
   const got = new Promise((res) => {
@@ -1537,6 +1539,8 @@ async function cspCheck(query = '') {
       if (e.source === f.contentWindow) { removeEventListener('message', h); res(e.data); }
     });
   });
+  const input = { xz: await fx2('text.xz'), want: await bytes(await fx2('text.txt')) };
+  f.onload = () => f.contentWindow.postMessage(input, '*');
   f.src = `/csp-check.html${query}`;
   document.body.append(f);
   const r = await Promise.race([got, new Promise((res) => setTimeout(() => res({ timeout: true }), 15000))]);
@@ -1554,7 +1558,43 @@ async function wasmTests() {
     `wasm: without 'wasm-unsafe-eval' the CSP blocks it (${no.wasmError})`);
 }
 
+async function workerTests() {
+  // The rest of the suite ran with setOffloadThreshold(0): every JS decode went through a worker.
+  check(offloadStats.jobs > 0 && offloadStats.workers > 0 && !offloadStats.broken(),
+    `offload: the suite's decoders ran in workers (${offloadStats.jobs} jobs, ${offloadStats.workers} workers, ${offloadStats.local} on the page)`);
+  const r = await cspCheck();
+  const o = r.offload || {};
+  check(r.unxz === 'same' && o.jobs === 1 && o.local === 0 && !o.broken,
+    `offload: decodes in a blob: worker under the page CSP (${r.unxz}, ${JSON.stringify(o)})`);
+  const p = r.probe || {};
+  check(p.tasks > 0 && p.dynamicImport === 'allowed', `offload: the worker imports our modules (${JSON.stringify(p)})`);
+  check(p.fetch === 'blocked', 'offload: the worker inherits connect-src none (fetch blocked)');
+  check(p.eval === 'blocked', 'offload: the worker cannot eval');
+  // The point of it: the page keeps running while a worker decodes. Longest gap between
+  // timer ticks while decoding the 3 MB text.xz on the page, then in a worker.
+  const longestGap = async (stream) => {
+    let last = performance.now(), worst = 0, on = true;
+    const tick = () => { const t = performance.now(); worst = Math.max(worst, t - last); last = t; if (on) setTimeout(tick, 0); };
+    setTimeout(tick, 0);
+    await new Response(stream).arrayBuffer();
+    on = false;
+    return Math.round(worst);
+  };
+  const tx = await fx2('text.xz');
+  setOffloadThreshold(Infinity);
+  const page = await longestGap(offload('unxz', tx));
+  setOffloadThreshold(0);
+  const worker = await longestGap(offload('unxz', tx));
+  check(worker < 50 && worker < page, `offload: the page stays responsive (longest gap ${worker} ms in a worker, ${page} ms on the page)`);
+  const no = await cspCheck('?noworker');
+  const n = no.offload || {};
+  check(no.unxz === 'same' && n.broken && n.local === 1 && n.jobs === 0,
+    `offload: without worker-src it falls back to the page (${no.unxz}, ${JSON.stringify(n)})`);
+}
+
+setOffloadThreshold(0);
 run()
   .then(wasmTests)
+  .then(workerTests)
   .catch((e) => { failed++; log.push(`FAIL exception: ${e && e.stack || e}`); })
   .finally(() => post('/result', JSON.stringify({ failed, log })));

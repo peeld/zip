@@ -52,7 +52,8 @@ and add their content type to the registry `sniff` list (see
   BLAKE2 lines in a list are skipped for now. SHA-224 / SHA-512/256 are
   cheap (other IVs on the existing code).
 - [ ] hash: hashing runs on the main thread (SHA-512 ~65 MB/s). Move it to a
-  Web Worker with the zip worker item in TODO.md if the UI stutters.
+  Web Worker (a `lib/tasks.js` task that returns the digest instead of a
+  stream) if the UI stutters.
 - [ ] hash: a dropped checksum list only routes to `hash` while it's
   running (otherwise it goes to `zip`). Routing by name (`SHA256SUMS`) would
   need `accept` to match whole names, not only extensions.
@@ -77,8 +78,8 @@ and add their content type to the registry `sniff` list (see
   packages for those use them; ARM, ARM-Thumb, PowerPC, IA-64, SPARC are
   small too). Each is ~50 lines like `x86Filter`.
 - [ ] unxz: speed (~15 MB/s output). The decoder keeps its range-coder state
-  in `this.*`; local variables in the hot loop should help a lot. And/or a
-  Web Worker (TODO.md).
+  in `this.*`; local variables in the hot loop should help a lot. It runs in
+  a Web Worker now, so it's only slow, not blocking.
 - [ ] uncpio: an initramfs with more than one compressed part (the kernel
   allows several end to end). Needs the decoders to report where their input
   ended. lz4 parts (legacy frame) aren't decoded at all (see Tier 2 lz4).
@@ -87,13 +88,12 @@ and add their content type to the registry `sniff` list (see
 - [ ] unzip: Deflate64 (method 9, Windows Explorer writes it for big zips)
   and PPMd (98, shared with the un7z item) entries.
 - [ ] bunzip2: speed (~17 MB/s in Firefox). Most time is the inverse-BWT
-  walk and the symbol loop; a Web Worker would keep the page responsive
-  (TODO.md).
+  walk and the symbol loop. It runs in a Web Worker now.
 - [ ] bunzip2: randomised blocks (bzip2 0.9.0 / 0.9.5, before 2000) are
   refused. Supporting them needs bzip2's 512-entry `BZ2_rNums` table.
 - [ ] unzstd: speed (~35 MB/s in Firefox). Most time is the sequence loop;
-  the literal / match copies are byte loops below 16 / 32 bytes. A Web
-  Worker would keep the page responsive (TODO.md).
+  the literal / match copies are byte loops below 16 / 32 bytes. It runs in
+  a Web Worker now.
 - [ ] un7z: AES (`-p`): AES-256-CBC with a SHA-256 key from the password
   (2^19 rounds; `crypto.subtle` has both). Needs a password prompt in the
   UI, the same one zip encryption would use. Encrypted names (`-mhe`) too.

@@ -1053,12 +1053,15 @@ def make_wasm(work: Path) -> None:
                    check=True, stdout=subprocess.DEVNULL)
 
 
-def csp_check_page(nowasm: bool) -> bytes:
-    """A page with index.html's own <meta> CSP (GitHub Pages only has that one) that runs test/wasm-csp.js."""
+def csp_check_page(query: str) -> bytes:
+    """A page with index.html's own <meta> CSP (GitHub Pages only has that one) that runs test/wasm-csp.js.
+    ?nowasm drops 'wasm-unsafe-eval', ?noworker drops worker-src, to show the checks can fail."""
     html = (ROOT / "public" / "index.html").read_text()
     meta = re.search(r'<meta http-equiv="Content-Security-Policy"[^>]*>', html).group(0)
-    if nowasm:
+    if "nowasm" in query:
         meta = meta.replace(" 'wasm-unsafe-eval'", "")
+    if "noworker" in query:
+        meta = re.sub(r" worker-src [^;]*;", "", meta)
     return (f'<!doctype html><meta charset="utf-8">{meta}'
             '<script type="module" src="/test/wasm-csp.js"></script>').encode()
 
@@ -1097,7 +1100,7 @@ def main():
         def do_GET(self):
             requested.append(self.path.split("?")[0])
             if self.path.split("?")[0] == "/csp-check.html":
-                body = csp_check_page("nowasm" in self.path)
+                body = csp_check_page(self.path)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))

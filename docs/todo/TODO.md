@@ -5,7 +5,7 @@
 - [ ] Multi-GB outputs: every op now builds its output as a Blob in the "made" list (`core/products.js`) before it's saved, so memory isn't flat any more. Options: a "make straight to a file" path when `showSaveFilePicker` exists and the input is large, or keep the product as a file handle instead of a Blob.
 - [ ] Fallback "Extract all" for Firefox/Safari (unzip, untar, unar, uncpio, `core/archive.js`): offer a single re-zipped download, or a warning, instead of many separate downloads.
 - [ ] Decode CP437 file names when the UTF-8 flag isn't set.
-- [ ] Do compression in a Web Worker so very large jobs don't make the UI stutter. unxz needs it most: its LZMA decoder is plain JS on the page (~15 MB/s); bunzip2 (~17 MB/s) next. Mind the worker CSP note in `docs/ref/formats.md` ("WebAssembly").
+- [ ] Web Workers: the JS decoders (unxz, unzstd, bunzip2, zip methods 12/14/93/95, 7z folders) run in one (`lib/offload.js`). Still on the page: hashing (`hash`, ~65 MB/s for SHA-512), the 7z header, peeks. A future wasm codec would go in a worker the same way (`lib/tasks.js`).
 - [ ] Optional: a service worker so the app works offline (supports the "nothing is uploaded" claim).
 
 ## Viewer ("view" in unzip, untar, and the transform ops)
