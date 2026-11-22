@@ -12,10 +12,13 @@
 // list; ops that take one file get the one dropped, or the one whose [use] is
 // clicked. [view] opens a file in the text/hex viewer, [x] forgets it. What an
 // op makes is listed in its own panel on the right (core/products.js).
+// Option settings and the command history are kept for the next visit, in
+// this browser only (core/store.js); `reset` forgets them.
 import { OPS, GROUPS } from './ops/registry.js';
 import { chooseFiles, filesFromDrop, pickOp } from './core/files.js';
 import { fmtBytes } from './core/ui.js';
 import { tokenize, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from './core/options.js';
+import { loadSettings, saveSettings, loadHistory, saveHistory, clearAll } from './core/store.js';
 
 const out = document.getElementById('out');
 const form = document.getElementById('prompt');
@@ -27,13 +30,14 @@ const fileView = document.getElementById('file-view');
 const uploaded = []; // { path, file }[] for this visit, in arrival order
 const loaded = new Map(); // op id -> { panel, api } (kept, so op state survives)
 let current = null; // id of the op on screen
-const settings = new Map(); // op id -> option values set this visit (typed or in the popup)
-const past = []; // command history
-let histPos = 0;
+const settings = new Map(); // op id -> option values set (typed, in the popup, or kept from the last visit)
+const past = loadHistory(); // command history, oldest first
+let histPos = past.length;
 
 const BUILTINS = [
   { id: 'help', description: 'list commands' },
   { id: 'clear', description: 'clear the screen' },
+  { id: 'reset', description: 'forget saved options and history (reset <command>: its options)' },
 ];
 const ALIASES = { '?': 'help', ls: 'help', cls: 'clear' };
 const names = () => [...OPS.map((o) => o.id), ...BUILTINS.map((b) => b.id)];
@@ -92,7 +96,8 @@ function help(arg = '') {
     line(' '),
     line('help <command> or help <group> for more.', 'muted'),
     line('drop files on the page to open them with the right command.', 'muted'),
-    line('keys: tab completes, up/down recalls history', 'muted'));
+    line('keys: tab completes, up/down recalls history', 'muted'),
+    line('options you set and the history are kept in this browser for next time; reset forgets them.', 'muted'));
 }
 
 /** What a file-type `accept` list looks like to a person: ".zip, .gz" (mime types dropped). */
@@ -108,6 +113,7 @@ function helpCmd(op) {
     line(`  ${op.description}`),
     ...(op.input ? [line(`  takes: ${takes(op.input)}`)] : []),
     ...(op.options ? [line('  options:'), ...optionHelp(op).map((l) => line(`    ${l}`))] : []),
+    ...(op.options && formatArgs(op, optionValues(op)) ? [line(`  set:   ${op.id} ${formatArgs(op, optionValues(op))}`), line(`         ('reset ${op.id}' for the defaults)`, 'muted')] : []),
     line(`  group: ${GROUPS[op.group] || 'other'}`),
     line(`  link:  #${op.id}`, 'muted'));
 }
@@ -117,10 +123,61 @@ function optionValues(op) {
   return { ...defaults(op), ...settings.get(op.id), ...loaded.get(op.id)?.api?.getOptions?.() };
 }
 
+// ---------------------------------------------------------------- remembered settings
+
+/** The flags that give an op's settings now, leaving out `remember: false` options ('' = all defaults). */
+function keptFlags(op) {
+  const now = optionValues(op);
+  return formatArgs(op, Object.fromEntries((op.options || []).filter((o) => o.remember !== false).map((o) => [o.name, now[o.name]])));
+}
+
+/** Save every op's settings (on each run, and when the page is hidden: panel changes count too). */
+function persist() {
+  saveSettings(Object.fromEntries(OPS.filter((o) => o.options).map((o) => [o.id, keptFlags(o)])));
+}
+
+/** Settings from the last visit: parsed like a typed line, so a value that's no longer valid is dropped. */
+function restore() {
+  const saved = loadSettings();
+  for (const op of OPS) {
+    if (!op.options || !saved[op.id]) continue;
+    const { values } = parseArgs(op, tokenize(saved[op.id]));
+    for (const o of op.options) if (o.remember === false) delete values[o.name];
+    if (Object.keys(values).length) settings.set(op.id, values);
+  }
+}
+
+/** `reset`: forget saved settings and history. `reset <cmd>`: that op's options back to the defaults. */
+function reset(arg = '') {
+  const name = arg.toLowerCase();
+  const ops = name ? OPS.filter((o) => o.id === name) : OPS;
+  if (name && !ops.length) return line(`reset: no command '${arg}'`, 'error');
+  if (name && !ops[0].options) return line(`reset: ${ops[0].id} has no options`, 'error');
+  for (const op of ops.filter((o) => o.options)) {
+    settings.delete(op.id);
+    loaded.get(op.id)?.api?.setOptions?.(defaults(op));
+  }
+  if (name) {
+    persist();
+    return line(`${ops[0].id}: options back to the defaults.`);
+  }
+  clearAll();
+  past.length = 0;
+  histPos = 0;
+  return line('forgot the saved options and the command history.');
+}
+
+restore();
+addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') persist(); });
+addEventListener('pagehide', persist);
+
 /** Show an op, loading its code on first use. `values`: options to set. Resolves to its API, or null if it failed to load. */
 async function runOp(op, cmd, values = {}) {
   setCurrent(op.id);
-  if (op.options) settings.set(op.id, { ...optionValues(op), ...values });
+  if (op.options) {
+    settings.set(op.id, { ...optionValues(op), ...values });
+    persist();
+  }
   const existing = loaded.get(op.id);
   if (existing && !existing.failed) {
     screen(cmd, existing.panel);
@@ -151,7 +208,11 @@ async function runOp(op, cmd, values = {}) {
 function run(cmd) {
   cmd = cmd.trim();
   if (!cmd) return;
-  if (past[past.length - 1] !== cmd) past.push(cmd);
+  if (past[past.length - 1] !== cmd) {
+    past.push(cmd);
+    if (past.length > 200) past.splice(0, past.length - 100);
+    saveHistory(past);
+  }
   histPos = past.length;
   hidePopup();
   let [name = '', ...args] = tokenize(cmd);
@@ -171,6 +232,7 @@ function run(cmd) {
   setCurrent(null);
   if (name === 'clear') screen(null);
   else if (name === 'help') screen(cmd, help(args[0]));
+  else if (name === 'reset') screen(cmd, reset(args[0]));
   else screen(cmd, line(`${name}: command not found. type 'help' for a list.`, 'error'));
 }
 

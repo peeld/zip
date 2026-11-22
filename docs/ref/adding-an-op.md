@@ -181,7 +181,9 @@ Rules:
   them in the options popup and lists them in `help`. The op gets
   `mount(root, { options, openOptions })` and should return
   `setOptions(values)` and `getOptions()`; `transformOp` does all of this
-  (map its select to an option with `choice.option`). See
+  (map its select to an option with `choice.option`). The shell keeps
+  settings for the next visit; mark an option that belongs to one file or
+  one run (a name, an offset, a hash) `remember: false`. See
   [command-line.md](command-line.md), "Options".
 - Don't add a drop zone or "choose file" button inside the op: the page's
   drop zone at the top does that.

@@ -24,6 +24,7 @@ import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
 import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig, resizedSize, OUTPUTS } from '../public/lib/image.js';
 import { tokenize, quote, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from '../public/core/options.js';
+import { loadSettings, saveSettings, loadHistory, saveHistory, clearAll } from '../public/core/store.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
 const log = [];
@@ -2091,8 +2092,39 @@ async function optionsTests() {
   }
 }
 
+/** core/store.js: settings and history in localStorage, and a page that still works when it throws. */
+function storeTests() {
+  clearAll();
+  check(JSON.stringify(loadSettings()) === '{}' && loadHistory().length === 0, 'store: empty to start');
+  saveSettings({ convert: 'webp -q 80', zip: '' });
+  saveHistory(Array.from({ length: 150 }, (_, i) => `help ${i}`));
+  const h = loadHistory();
+  check(JSON.stringify(loadSettings()) === '{"convert":"webp -q 80"}' && h.length === 100 && h[0] === 'help 50' && h[99] === 'help 149',
+    'store: settings (empty ones left out) and the last 100 history lines');
+  localStorage.setItem('zipmedia', '{"options":{"a":"x","b":3},"history":["ok",4]}');
+  check(JSON.stringify(loadSettings()) === '{"a":"x"}' && loadHistory().join() === 'ok', 'store: values of the wrong type are dropped');
+  localStorage.setItem('zipmedia', '{not json');
+  check(JSON.stringify(loadSettings()) === '{}' && loadHistory().length === 0, 'store: unreadable JSON reads as nothing saved');
+  const own = Object.getOwnPropertyDescriptor(window, 'localStorage');
+  let thrown = false;
+  try {
+    Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new DOMException('blocked', 'SecurityError'); } });
+    thrown = (() => { try { localStorage; return false; } catch { return true; } })();
+    const ok = saveSettings({ convert: 'webp' }) === false && saveHistory(['x']) === false
+      && JSON.stringify(loadSettings()) === '{}' && loadHistory().length === 0;
+    clearAll();
+    check(thrown && ok, 'store: storage that throws: nothing saved, nothing thrown');
+  } finally {
+    if (own) Object.defineProperty(window, 'localStorage', own);
+    else delete window.localStorage;
+  }
+  clearAll();
+  check(localStorage.getItem('zipmedia') === null, 'store: clearAll');
+}
+
 /** The prompt and the options popup in the real page (in an iframe). */
 async function shellTests() {
+  clearAll();
   const f = document.createElement('iframe');
   f.style.width = '1200px';
   f.style.height = '800px';
@@ -2193,6 +2225,61 @@ async function shellTests() {
   } finally {
     f.remove();
   }
+  await new Promise((r) => setTimeout(r, 100));
+
+  // What that visit kept (the names and the resize aren't), then a second visit.
+  const kept = JSON.parse(localStorage.getItem('zipmedia') || '{}');
+  check(JSON.stringify(kept.options) === '{"zip":"-0","convert":"bmp","hash":"md5 sha1"}' && kept.history?.at(-1) === 'hash md5 sha1',
+    `shell: settings and history kept for the next visit (${JSON.stringify(kept.options)}, ${kept.history?.at(-1)})`);
+  kept.options.encode = 'nosuch';   // no longer valid: dropped
+  kept.options.tar = 'mine -H ustar'; // the name isn't remembered
+  localStorage.setItem('zipmedia', JSON.stringify(kept));
+  const g = document.createElement('iframe');
+  const loaded2 = new Promise((r) => { g.onload = r; });
+  g.src = '/public/index.html';
+  document.body.append(g);
+  await loaded2;
+  try {
+    const w = g.contentWindow, d = g.contentDocument;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 50 && !d.getElementById('opts'); i++) await sleep(100);
+    const cmd = d.getElementById('cmd');
+    const type = (text) => { cmd.value = text; cmd.dispatchEvent(new w.Event('input')); };
+    const run = async (text) => { type(text); d.getElementById('prompt').requestSubmit(); await sleep(300); };
+    const val = (id) => d.getElementById(id)?.value;
+    type('convert ');
+    check(val('opt-convert-to') === 'bmp' && val('opt-convert-quality') === '90' && val('opt-convert-width') === '',
+      'shell, next visit: convert starts from the kept settings');
+    type('tar ');
+    check(val('opt-tar-format') === 'ustar' && val('opt-tar-name') === '', 'shell, next visit: tar -H ustar kept, a saved name ignored');
+    type('encode ');
+    check(val('opt-encode-format') === 'base32', 'shell, next visit: a saved value that no longer parses is dropped');
+    type('');
+    cmd.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    check(cmd.value === 'hash md5 sha1', `shell, next visit: up recalls the last visit's command (${cmd.value})`);
+    await run('help convert');
+    const out = () => d.getElementById('out').textContent;
+    check(out().includes('set:   convert bmp') && out().includes("'reset convert' for the defaults"), 'shell: help <cmd> shows what is set');
+    await run('convert');
+    await run('reset convert');
+    const said = out().includes('convert: options back to the defaults.');
+    type('convert ');
+    const popupTo = val('opt-convert-to');
+    await run('convert');
+    check(said && popupTo === 'png' && d.querySelector('#op-convert select')?.value === 'png'
+      && !('convert' in JSON.parse(localStorage.getItem('zipmedia')).options),
+      `shell: reset convert puts the defaults back in the panel, the popup and storage (${popupTo}, ${localStorage.getItem('zipmedia')})`);
+    await run('reset zipp');
+    check(out().includes("reset: no command 'zipp'"), 'shell: reset of an unknown command');
+    await run('reset');
+    type('');
+    cmd.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }));
+    check(out().includes('forgot the saved options and the command history.') && localStorage.getItem('zipmedia') === null && cmd.value === '',
+      'shell: reset forgets settings and history');
+  } finally {
+    g.remove();
+    clearAll();
+  }
 }
 
 setOffloadThreshold(0);
@@ -2200,6 +2287,7 @@ setOffloadThreshold(0);
 const stage = (fn, name, ms = 30000) => () => Promise.race([fn(), new Promise((_, no) => setTimeout(() => no(new Error(`${name} timed out`)), ms))]);
 run()
   .then(stage(optionsTests, 'optionsTests'))
+  .then(stage(async () => storeTests(), 'storeTests'))
   .then(stage(shellTests, 'shellTests'))
   .then(stage(wasmTests, 'wasmTests'))
   .then(stage(workerTests, 'workerTests'))

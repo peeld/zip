@@ -17,7 +17,9 @@ image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM in;
 PNG, JPEG, WebP, ICO, BMP, TGA, QOI, PPM out), run
 `convert` first: a dropped image goes to `zip` otherwise. Commands with
 settings take them as flags (`convert webp -q 80 -w 50%`, `zip photos -0`, `hash md5 sha1`), or type the
-command and a space to pick them in a popup under the prompt. A single file
+command and a space to pick them in a popup under the prompt. Settings and
+the command history are kept in the browser for the next visit (`reset`
+forgets them). A single file
 is matched by its content first (a gzipped tar called `backup.dat` still
 opens in `untar`), its name second. `help <command>` says what a command takes. `#unzip` in the
 URL runs that command on load.
@@ -30,7 +32,7 @@ public/              deploy this folder as the web root
   app.js             command prompt; loads an op's code the first time its command runs
   style.css
   .htaccess          security headers for Apache
-  core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform, archive, pack)
+  core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform, archive, pack, options, store)
   lib/               shared processing libraries (zip.js, tar.js, ar.js, cpio.js, source.js, decompress.js, gzip.js, xz.js, lzma.js, zstd.js, bzip2.js, 7z.js, filters.js, brotli.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js, image.js, imagefmt.js)
   vendor/<name>/     third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/registry.js    list of ops (id = command name), in help order

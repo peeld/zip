@@ -41,10 +41,12 @@ gone on reload.
   The `id` is the command name. `GROUPS` gives the `help` heading order;
   within a group, ops are listed in registry order.
 - Built-ins in `public/app.js`: `help` (aliases `?`, `ls`), `help <cmd>`
-  (title, description, accepted files, options, `#<id>` link), `help <group>`, and
-  `clear` (alias `cls`). Unknown commands print `command not found`.
+  (title, description, accepted files, options, what's set now, `#<id>` link), `help <group>`,
+  `clear` (alias `cls`), and `reset` (forget the saved settings and
+  history) / `reset <cmd>` (that op's options back to the defaults, in its
+  panel too). Unknown commands print `command not found`.
 - Tab completion (candidates on a hint line under the prompt) and up/down
-  history.
+  history. The history (the last 100 lines) is kept for the next visit (below).
 - The line is split into words by `tokenize` (`core/options.js`): quotes keep
   spaces, a backslash escapes. Words after the command are its options (below).
 
@@ -89,9 +91,19 @@ together give gzip's `-N` / `-n`), text. `what` names the value in help
   Errors show in the box as you type. Enter (at the prompt or in a field)
   runs the line; Tab at the prompt completes a flag or value, or, with
   nothing to complete, moves into the popup; Escape closes it.
-- **Sticky:** options set this visit stay with the op (`settings` in
-  `app.js`) until changed: `convert -q 70`, then `convert`, still has
-  quality 70. Words only change what they name. Not kept across reloads.
+- **Sticky:** options set stay with the op (`settings` in `app.js`) until
+  changed: `convert -q 70`, then `convert`, still has quality 70. Words
+  only change what they name.
+- **Kept for the next visit** (`core/store.js`, one localStorage key,
+  `zipmedia`): each op's settings, saved on every run and when the page is
+  hidden (so a change in a panel counts), as the flags that give them
+  (`{ "convert": "webp -q 80" }`). They're read back with `parseArgs`, so a
+  value that no longer parses is dropped rather than breaking the op.
+  Options with `remember: false` in the registry are never saved: archive
+  names, `uuencode [name]`, `hex -s / -l / -o`, `convert -w / -h`,
+  `hash --check`, and `decode`'s format (guessed per file). Every
+  read and write is in try/catch: with storage blocked, nothing is kept
+  and nothing breaks. Nothing leaves the browser.
 - **The op:** `mount(root, { options, openOptions })` gets the values and a
   function that opens the popup (transformOp shows it as `[options]`);
   `api.setOptions(values)` passes on what a later line typed while the op is

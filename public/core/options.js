@@ -18,7 +18,8 @@
 // --no-name; `shortOff: '0'` makes -0 mean --no-name), text. Values are
 // kept as strings for size / text / choice, arrays (in `values` order) for
 // set, numbers for int (typed in decimal or 0x hex), booleans for bool.
-// `what` names the value in help (`--seek <offset>`).
+// `what` names the value in help (`--seek <offset>`). `remember: false`:
+// the shell doesn't keep it for the next visit (core/store.js).
 
 import { el } from './ui.js';
 

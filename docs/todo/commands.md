@@ -8,7 +8,10 @@ In rough priority order:
   [../done/2026-11-21-hex-range-check.md](../done/2026-11-21-hex-range-check.md),
   [../done/2026-11-21-tar-format.md](../done/2026-11-21-tar-format.md)):
   `tar` / `cpio` compressors past gzip, once there are writers.
-- [ ] Remember option settings across visits (localStorage, try/catch), with history.
+- Done: settings and history kept across visits, and `reset`
+  ([../done/2026-11-21-remember-settings.md](../done/2026-11-21-remember-settings.md)).
+  Left: a `history` command to list them; sync between open tabs (the
+  `storage` event) if two tabs fighting over settings turns out to matter.
 - [ ] Options in `#<id>` links (`#convert?to=webp&q=80`)?
 - [ ] Popup: keep a bad value in its field (now it shows the last good one,
   with the error under the fields).
@@ -19,5 +22,4 @@ In rough priority order:
   Tab completion.
 - [ ] **Say where dropped files went** when routing switches op (e.g. a
   muted `3 files -> zip` line), if users find the switch surprising.
-- [ ] **Remember history** across visits (localStorage, wrapped in try/catch).
 - [ ] Optional: `theme` command (green/amber/paper), saved in localStorage.
