@@ -45,7 +45,9 @@ gone on reload.
   `clear` (alias `cls`), and `reset` (forget the saved settings and
   history) / `reset <cmd>` (that op's options back to the defaults, in its
   panel too). Unknown commands print `command not found`.
-- Tab completion (candidates on a hint line under the prompt) and up/down
+- Tab completion (candidates on a hint line under the prompt) of the
+  command, of `help <command or group>` and `reset <command with options>`
+  (`argWords` in `app.js`), and of an op's flags and values (below); up/down
   history. The history (the last 100 lines) is kept for the next visit (below).
 - The line is split into words by `tokenize` (`core/options.js`): quotes keep
   spaces, a backslash escapes. Words after the command are its options (below).

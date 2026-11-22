@@ -14,7 +14,7 @@ In rough priority order:
   `storage` event) if two tabs fighting over settings turns out to matter.
 - Done: options in `#<id>` links
   ([../done/2026-11-21-option-links.md](../done/2026-11-21-option-links.md)).
-- [ ] Tab completion of `help <arg>` (command and group names).
+- Done: Tab completes `help <arg>` (commands and groups) and `reset <cmd>`.
 - [ ] `help <cmd>`: an optional `usage` string per op for longer text, and a
   `man` alias.
 - [ ] **Aliases per op:** `aliases: ['extract']` in the registry, included in

@@ -41,6 +41,11 @@ const BUILTINS = [
 ];
 const ALIASES = { '?': 'help', ls: 'help', cls: 'clear' };
 const names = () => [...OPS.map((o) => o.id), ...BUILTINS.map((b) => b.id)];
+/** What Tab offers after a built-in: help takes commands and groups, reset the commands with options. */
+const argWords = (cmd) => ({
+  help: () => [...new Set([...names(), ...Object.keys(GROUPS)])], // 'encode' is both
+  reset: () => OPS.filter((o) => o.options).map((o) => o.id),
+})[cmd]?.();
 
 const el = (tag, props = {}, ...kids) => {
   const e = Object.assign(document.createElement(tag), props);
@@ -509,11 +514,17 @@ input.addEventListener('keydown', (e) => {
     }
   } else if (e.key === 'Tab' && input.value.trim() && !e.shiftKey) {
     // Only complete when there is something typed, so Tab still moves focus otherwise.
+    // The first word is a command; after help / reset, a word from argWords.
     const typed = input.value.trimStart().toLowerCase();
-    const matches = names().filter((n) => n.startsWith(typed));
+    const m = /^(\S+)\s+(\S*)$/.exec(typed);
+    const args = m && argWords(ALIASES[m[1]] || m[1]);
+    if (m && !args) return;
+    const word = m ? m[2] : typed;
+    const matches = (args || names()).filter((n) => n.startsWith(word));
     if (!matches.length) return;
     e.preventDefault();
-    if (matches.length === 1) { input.value = matches[0] + ' '; hint.textContent = ''; syncPopup(); }
+    const head = m ? input.value.slice(0, input.value.length - m[2].length) : '';
+    if (matches.length === 1) { input.value = `${head}${matches[0]} `; hint.textContent = ''; syncPopup(); }
     else hint.textContent = matches.join('  ');
   }
 });
