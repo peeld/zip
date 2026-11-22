@@ -40,7 +40,16 @@ const BUILTINS = [
   { id: 'reset', description: 'forget saved options and history (reset <command>: its options)' },
 ];
 const ALIASES = { '?': 'help', ls: 'help', cls: 'clear' };
-const names = () => [...OPS.map((o) => o.id), ...BUILTINS.map((b) => b.id)];
+// An op's own aliases (registry `aliases`): name -> { op, pre: the words it stands for }.
+const OP_ALIASES = new Map(OPS.flatMap((op) => Object.entries(op.aliases || {}).map(([a, words]) => [a, { op, pre: tokenize(words) }])));
+const names = () => [...OPS.map((o) => o.id), ...OP_ALIASES.keys(), ...BUILTINS.map((b) => b.id)];
+
+/** The op a command word names, with the words an alias adds first (sha256sum -> hash, ['sha256']), or null. */
+function lookup(word = '') {
+  const name = word.toLowerCase();
+  const op = OPS.find((o) => o.id === name);
+  return op ? { op, pre: [] } : OP_ALIASES.get(name) || null;
+}
 /** What Tab offers after a built-in: help takes commands and groups, reset the commands with options. */
 const argWords = (cmd) => ({
   help: () => [...new Set([...names(), ...Object.keys(GROUPS)])], // 'encode' is both
@@ -115,8 +124,8 @@ const cmdLink = (id) => el('button', { type: 'button', className: 'cmd', textCon
 /** `help`: all commands under group headings. `help <group>`: one group. `help <cmd>`: one command. */
 function help(arg = '') {
   arg = arg.toLowerCase();
-  const op = OPS.find((o) => o.id === (ALIASES[arg] || arg));
-  if (op) return helpCmd(op);
+  const found = lookup(arg);
+  if (found) return helpCmd(found.op);
   const builtin = BUILTINS.find((b) => b.id === (ALIASES[arg] || arg));
   if (builtin) return el('div', { className: 'help' }, line(`${builtin.id}: ${builtin.description}`));
   const groups = Object.keys(GROUPS).filter((g) => !arg || g === arg || GROUPS[g] === arg);
@@ -158,6 +167,7 @@ function helpCmd(op) {
   return el('div', { className: 'help' },
     el('div', {}, cmdLink(op.id), ` - ${op.title}`),
     line(`  ${op.description}`),
+    ...(op.aliases ? [line(`  also:  ${Object.entries(op.aliases).map(([a, w]) => (w ? `${a} (${op.id} ${w})` : a)).join(', ')}`)] : []),
     ...(op.input ? [line(`  takes: ${takes(op.input)}`)] : []),
     ...(op.options ? [line('  options:'), ...optionHelp(op).map((l) => line(`    ${l}`))] : []),
     ...(op.options && formatArgs(op, optionValues(op)) ? [line(`  set:   ${op.id} ${formatArgs(op, optionValues(op))}`), line(`         ('reset ${op.id}' for the defaults)`, 'muted')] : []),
@@ -267,9 +277,10 @@ function run(cmd) {
   name = name.toLowerCase();
   name = ALIASES[name] || name;
 
-  const op = OPS.find((o) => o.id === name);
-  if (op) {
-    const { values, errors } = parseArgs(op, args);
+  const found = lookup(name);
+  if (found) {
+    const { op, pre } = found;
+    const { values, errors } = parseArgs(op, [...pre, ...args]);
     if (errors.length) {
       setCurrent(null);
       return screen(cmd, ...errors.map((e) => line(`${op.id}: ${e}`, 'error')),
@@ -412,18 +423,20 @@ function hidePopup() {
   popupOp = popupForm = null;
 }
 
-/** The op named by the prompt's first word, once a space follows it. */
-function typedOp() {
+/** The op (and an alias's words) named by the prompt's first word, once a space follows it. */
+function typedCmd() {
   const m = /^\s*(\S+)\s/.exec(input.value);
-  const name = m?.[1].toLowerCase();
-  return m ? OPS.find((o) => o.id === (ALIASES[name] || name)) : null;
+  return m ? lookup(m[1]) : null;
 }
+const typedOp = () => typedCmd()?.op;
+/** The words after the command, an alias's first. */
+const typedArgs = () => [...(typedCmd()?.pre || []), ...tokenize(input.value).slice(1)];
 
 /** Show or update the popup from what's typed at the prompt. */
 function syncPopup() {
   const op = typedOp();
   if (!op?.options) return hidePopup();
-  const { values, errors, bad } = parseArgs(op, tokenize(input.value).slice(1));
+  const { values, errors, bad } = parseArgs(op, typedArgs());
   const shown = { ...optionValues(op), ...values };
   if (popupOp !== op) {
     popupOp = op;
@@ -499,7 +512,7 @@ input.addEventListener('keydown', (e) => {
   } else if (e.key === 'Tab' && !e.shiftKey && typedOp()?.options) {
     // After a command with options: complete the word being typed, or go into the popup.
     const op = typedOp();
-    const words = tokenize(input.value).slice(1);
+    const words = typedArgs();
     const last = /\s$/.test(input.value) ? '' : words.pop() ?? '';
     const matches = last ? completeArg(op, words, last) : [];
     e.preventDefault();

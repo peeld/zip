@@ -37,7 +37,15 @@ The list only holds `File` references. Nothing is copied or stored, and it's
 gone on reload.
 
 ## Commands
-- `public/ops/registry.js` lists the ops: `{ id, group, title, description, input, options }`.
+- `public/ops/registry.js` lists the ops: `{ id, group, title, description, input, options, aliases }`.
+  `aliases` are other names, each standing for the op plus some words:
+  `sha256sum` / `md5sum` / … / `crc32` = `hash <algo>`, `xxd` = `hex`,
+  `base32` / `base32hex` / `ascii85` = `encode <format>`, `topng` /
+  `tojpg` / `towebp` / `toico` = `convert <format>`, `unlzma` = `unxz`.
+  Words typed after an alias come after its own (`sha256sum md5` hashes
+  both). The echo shows the line as typed; the popup, Tab completion and
+  `help <alias>` (which shows the op, with an `also:` line) work the same
+  as for the op. Editing the popup rewrites the line with the op's name.
   The `id` is the command name. `GROUPS` gives the `help` heading order;
   within a group, ops are listed in registry order.
 - Built-ins in `public/app.js`: `help` (aliases `?`, `ls`), `help <cmd>`

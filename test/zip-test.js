@@ -1868,6 +1868,20 @@ async function optionsTests() {
     && parseArgs(zipOp, ['--compress']).values.compress === true && parseArgs(zipOp, ['--no-compress']).values.compress === false,
     `zip options: name, -0, --compress (${JSON.stringify(z)})`);
   check(parseArgs(zipOp, ['a', 'b']).errors[0] === "'b': name is already a", 'zip options: one name');
+  // Op aliases: unique, not a command or a built-in, and their words parse.
+  {
+    const taken = new Set([...OPS.map((o) => o.id), 'help', 'clear', 'reset', '?', 'ls', 'cls']);
+    const bad = [];
+    for (const op of OPS) {
+      for (const [name, words] of Object.entries(op.aliases || {})) {
+        if (taken.has(name) || !/^[a-z0-9-]+$/.test(name)) bad.push(`${name} clashes`);
+        taken.add(name);
+        const { errors } = parseArgs(op, tokenize(words));
+        if (errors.length) bad.push(`${name}: ${errors[0]}`);
+      }
+    }
+    check(!bad.length && taken.has('sha256sum') && taken.has('xxd'), `registry aliases are unique and parse (${bad.join('; ')})`);
+  }
   const pb = parseArgs(convert, tokenize('-q 500 -q 70 -w x'));
   check(JSON.stringify(pb.bad) === '{"width":"x"}' && pb.values.quality === 70 && pb.errors.length === 2,
     `parseArgs: bad holds what didn't convert, a later good value clears it (${JSON.stringify(pb.bad)})`);
@@ -2229,6 +2243,18 @@ async function shellTests() {
     type('clear x');
     key('Tab');
     check(cmd.value === 'clear x', 'shell: no completion after a command that takes no words');
+    type('sha2');
+    key('Tab');
+    check(cmd.value === 'sha256sum ' && !popup.hidden && popup.textContent.includes('hash options')
+      && [...popup.querySelectorAll('input[type=checkbox]:checked')].map((b) => b.value).join() === 'sha256',
+      `shell: an alias completes, and its popup has its words set (${cmd.value})`);
+    type('topng -');
+    key('Tab');
+    check(hint.textContent === '--quality  --width  --height' && field('to').value === 'png', `shell: an alias's flags complete (${hint.textContent})`);
+    type('help md5sum');
+    await submit();
+    check(d.getElementById('out').textContent.includes('hash - Checksums') && d.getElementById('out').textContent.includes('md5sum (hash md5)'),
+      'shell: help <alias> shows the command, which lists its aliases');
     type('help convert');
     await submit();
     check(d.getElementById('out').textContent.includes('-q, --quality <1-100>'), 'shell: help convert lists the options');
@@ -2254,6 +2280,13 @@ async function shellTests() {
     type('hash ');
     const set = [...popup.querySelectorAll('input[type=checkbox]')].filter((b) => b.checked).map((b) => b.value).join();
     check(hon === 2 && set === 'md5,sha1', `shell: hash md5 sha1 ticks those, and the popup shows them (${hon}, ${set})`);
+    type('xxd -u');
+    await submit();
+    for (let i = 0; i < 30 && !d.querySelector('#op-hex'); i++) await sleep(100);
+    check(d.querySelector('#op-hex') && w.location.hash === '#hex?upper=1' && d.getElementById('out').textContent.startsWith('> xxd -u'),
+      `shell: xxd -u runs hex -u, echoed as typed (${w.location.hash})`);
+    type('hash md5 sha1');
+    await submit();
   } finally {
     f.remove();
   }
@@ -2261,7 +2294,7 @@ async function shellTests() {
 
   // What that visit kept (the names and the resize aren't), then a second visit.
   const kept = JSON.parse(localStorage.getItem('zipmedia') || '{}');
-  check(JSON.stringify(kept.options) === '{"zip":"-0","convert":"bmp","hash":"md5 sha1"}' && kept.history?.at(-1) === 'hash md5 sha1',
+  check(JSON.stringify(kept.options) === '{"zip":"-0","hex":"--upper","convert":"bmp","hash":"md5 sha1"}' && kept.history?.at(-1) === 'hash md5 sha1',
     `shell: settings and history kept for the next visit (${JSON.stringify(kept.options)}, ${kept.history?.at(-1)})`);
   kept.options.encode = 'nosuch';   // no longer valid: dropped
   kept.options.tar = 'mine -H ustar'; // the name isn't remembered

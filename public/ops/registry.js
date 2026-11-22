@@ -19,6 +19,10 @@
 // core/options.js for the schema. The op gets them in mount(root, { options })
 // and through api.setOptions(values), and reports its own with api.getOptions().
 // Choice values here must match the op's own list (a test checks).
+// `aliases` (optional): other names for the command, each with the words it
+// stands for: { sha256sum: 'sha256' } makes `sha256sum x` mean `hash sha256 x`.
+// They complete with Tab and are listed in `help <cmd>`; a test checks
+// they don't clash with each other, a command or a built-in.
 // The shell keeps an op's settings for the next visit (core/store.js), except
 // options with `remember: false`: ones that belong to one file or one run.
 //
@@ -54,7 +58,7 @@ export const OPS = [
     input: { accept: '.7z,application/x-7z-compressed', sniff: ['7z'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
     input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
-  { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.',
+  { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.', aliases: { unlzma: '' },
     input: { accept: '.xz,.lzma,.txz,.tlz,application/x-xz', sniff: ['xz', 'tar.xz', 'cpio.xz', 'lzma'] } },
   { id: 'unzstd', group: 'compress', title: 'Decompress a zstd file', description: 'Decompress a .zst (Zstandard) file.',
     input: { accept: '.zst,.zstd,.tzst,application/zstd', sniff: ['zst', 'tar.zst', 'cpio.zst'] } },
@@ -96,7 +100,7 @@ export const OPS = [
   { id: 'uuencode', group: 'encode', title: 'uuencode a file', description: 'Encode one file as uuencoded text.',
     input: {}, options: [{ name: 'name', positional: true, type: 'text', placeholder: 'the file\'s', remember: false, help: "the name on the begin line (uuencode file name)" }] },
   // The flags are xxd's, and the output is what xxd writes with them.
-  { id: 'hex', group: 'encode', title: 'Hex dump a file', description: 'Write a hex dump of one file (xxd format).',
+  { id: 'hex', group: 'encode', title: 'Hex dump a file', description: 'Write a hex dump of one file (xxd format).', aliases: { xxd: '' },
     input: {},
     options: [
       { name: 'cols', short: 'c', type: 'int', min: 1, max: 256, placeholder: '16', help: 'bytes a line (16; plain: 30)' },
@@ -108,7 +112,7 @@ export const OPS = [
       { name: 'offset', short: 'o', type: 'int', min: 0, what: 'n', placeholder: '0', remember: false, help: 'add this to the offsets shown' },
     ] },
   { id: 'encode', group: 'encode', title: 'Encode as text', description: 'Encode one file as base32, ascii85, quoted-printable or URL-encoded text.',
-    input: {}, options: [textFormat('the text format')] },
+    input: {}, options: [textFormat('the text format')], aliases: { base32: 'base32', base32hex: 'base32hex', ascii85: 'ascii85' } },
   // Takes images, but only while it's the running command: a dropped image still goes to zip.
   { id: 'convert', group: 'image', title: 'Convert an image', description: 'Convert an image to PNG, JPEG, WebP, ICO, BMP, TGA, QOI or PPM.',
     input: { accept: '.png,.jpg,.jpeg,.jfif,.jpe,.gif,.webp,.bmp,.dib,.ico,.cur,.avif,.qoi,.tga,.icb,.vda,.vst,.pbm,.pgm,.ppm,.pnm,.pam,'
@@ -122,7 +126,8 @@ export const OPS = [
       { name: 'quality', short: 'q', type: 'int', min: 1, max: 100, default: 90, help: 'JPEG / WebP quality' },
       { name: 'width', short: 'w', type: 'size', remember: false, help: 'resize: pixels or %' },
       { name: 'height', short: 'h', type: 'size', remember: false, help: 'resize: pixels or % (with width: fit inside both)' },
-    ] },
+    ],
+    aliases: { topng: 'png', tojpg: 'jpeg', towebp: 'webp', toico: 'ico' } },
   // Takes any files while running. A checksum list dropped with them
   // (SHA256SUMS, *.md5, *.sfv, …) is read as the list to check against.
   { id: 'hash', group: 'check', title: 'Checksums', description: 'Hash files (SHA-256, MD5, …) and check them against a hash or a SHA256SUMS list.',
@@ -131,5 +136,6 @@ export const OPS = [
     options: [{ name: 'algos', short: 'a', positional: true, type: 'set', default: ['sha256'], label: 'hashes', help: 'the hashes to compute',
       values: [['crc32', 'CRC-32'], ['md5', 'MD5'], ['sha1', 'SHA-1'], ['sha256', 'SHA-256'], ['sha384', 'SHA-384'], ['sha512', 'SHA-512']],
       aliases: { crc: 'crc32', sfv: 'crc32', sha: 'sha1' } },
-    { name: 'check', type: 'text', what: 'hex', placeholder: 'a hash', remember: false, help: 'the hash to check each file against (its length picks the algorithm)' }] },
+    { name: 'check', type: 'text', what: 'hex', placeholder: 'a hash', remember: false, help: 'the hash to check each file against (its length picks the algorithm)' }],
+    aliases: { md5sum: 'md5', sha1sum: 'sha1', sha256sum: 'sha256', sha384sum: 'sha384', sha512sum: 'sha512', crc32: 'crc32' } },
 ];

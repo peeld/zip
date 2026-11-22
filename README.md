@@ -17,7 +17,8 @@ image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM in;
 PNG, JPEG, WebP, ICO, BMP, TGA, QOI, PPM out), run
 `convert` first: a dropped image goes to `zip` otherwise. Commands with
 settings take them as flags (`convert webp -q 80 -w 50%`, `zip photos -0`, `hash md5 sha1`), or type the
-command and a space to pick them in a popup under the prompt. Settings and
+command and a space to pick them in a popup under the prompt. The usual names
+work too: `sha256sum`, `md5sum`, `xxd`, `base32`, `unlzma`, `topng`. Settings and
 the command history are kept in the browser for the next visit (`reset`
 forgets them). A single file
 is matched by its content first (a gzipped tar called `backup.dat` still

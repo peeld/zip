@@ -62,8 +62,8 @@ and add their content type to the registry `sniff` list (see
 - [ ] ar: a BSD (`#1/N`) output option for macOS `ld`, if anyone asks (llvm
   tools read GNU names).
 - [ ] encode / decode: Z85 (ZeroMQ) and btoa-style ascii85 output; `-w`
-  for base32. Aliases (`base32`, `unbase32`, `qp`, …)
-  that pre-pick the format, once the registry has aliases (commands.md).
+  for base32. (Aliases `base32`, `base32hex`, `ascii85` exist for encode;
+  decode guesses the format from each file, so it has none.)
 - [ ] decode: only goes by name (`.b32`, `.qp`, …) or while running. Could
   sniff by content, but `detectEncoding` is a guess (qp vs ascii85 vs text),
   so it would need to be careful not to grab ordinary text files from `zip`.

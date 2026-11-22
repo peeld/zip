@@ -17,8 +17,8 @@ In rough priority order:
 - Done: Tab completes `help <arg>` (commands and groups) and `reset <cmd>`.
 - [ ] `help <cmd>`: an optional `usage` string per op for longer text, and a
   `man` alias.
-- [ ] **Aliases per op:** `aliases: ['extract']` in the registry, included in
-  Tab completion.
+- Done: aliases per op, with preset words (`sha256sum` = `hash sha256`, `xxd`,
+  `base32`, `topng`, …: [../ref/command-line.md](../ref/command-line.md), "Commands").
 - [ ] **Say where dropped files went** when routing switches op (e.g. a
   muted `3 files -> zip` line), if users find the switch surprising.
 - [ ] Optional: `theme` command (green/amber/paper), saved in localStorage.

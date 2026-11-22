@@ -183,7 +183,9 @@ Rules:
   `setOptions(values)` and `getOptions()`; `transformOp` does all of this
   (map its select to an option with `choice.option`). The shell keeps
   settings for the next visit; mark an option that belongs to one file or
-  one run (a name, an offset, a hash) `remember: false`. See
+  one run (a name, an offset, a hash) `remember: false`. If the command
+  has a well-known name elsewhere (`xxd`, `sha256sum`), add it to the
+  registry `aliases`, with the words it stands for. See
   [command-line.md](command-line.md), "Options".
 - Don't add a drop zone or "choose file" button inside the op: the page's
   drop zone at the top does that.

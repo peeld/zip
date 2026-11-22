@@ -115,8 +115,7 @@ only takes images while it's running. The original plan:
 
 ## Open questions
 
-- Name: went with `convert`. Per-format aliases (`topng`, `tojpg`, `towebp`)
-  once the registry has aliases.
+- Name: went with `convert`, with aliases `topng`, `tojpg`, `towebp`, `toico`.
 - Several files at once (a folder of HEIC → JPEG is a common wish)?
   `transformOp` is one file in, one out; a batch would want a zip of the outputs.
 - Transparency in JPEG / BMP: white for now; a `--background` option now that there are options.
