@@ -27,12 +27,21 @@
 //               `choice` to transform, outName and inspect. Changing it re-runs
 //               inspect(file, { choice, arrived: false }); when a file arrives
 //               (arrived: true) inspect can return info.choice to set the select.
+//               `option`: the registry option the select is (convert: 'to'),
+//               so `convert webp` and the popup set it.
+//
+// Registry options (ops/registry.js `options`, core/options.js) come in as
+// mount(root, { options, openOptions }) and api.setOptions(values); they're
+// passed on as `options` to inspect, outName and transform, and a change
+// re-runs inspect. api.getOptions() gives them back, the select included.
+// With `openOptions`, the row gets an [options] button that opens the popup.
 import { el, button, row, fmtBytes, task } from './ui.js';
 import { countBytes, streamToBlob } from './streams.js';
 import { products } from './products.js';
 
 export function transformOp({ verb, transform, outName, inspect, save = {}, choice }) {
-  return function mount(root) {
+  return function mount(root, { options: given = {}, openOptions } = {}) {
+    let opts = { ...given };
     let file = null;    // the file, once inspect accepted it
     let current = null; // the last file that arrived (accepted or not)
     let info = null;
@@ -45,11 +54,13 @@ export function transformOp({ verb, transform, outName, inspect, save = {}, choi
     const made = products();
     const pick = choice && el('select', {}, ...choice.options.map(([value, text]) => el('option', { value }, text)));
     if (pick) pick.onchange = () => { if (current && !busy) open(current, false); };
+    if (pick && choice.option && opts[choice.option] != null) pick.value = opts[choice.option];
+    const optionsBtn = openOptions && button('options', () => openOptions(), { link: true });
 
     root.append(
       t.el,
       about,
-      row(...(pick ? [el('label', {}, `${choice.label} `, pick)] : []), el('label', {}, 'Name ', nameInput), go),
+      row(...(pick ? [el('label', {}, `${choice.label} `, pick)] : []), el('label', {}, 'Name ', nameInput), go, optionsBtn),
       made.el,
     );
     t.status('no file yet: drop one, or [use] a file on the list');
@@ -66,7 +77,7 @@ export function transformOp({ verb, transform, outName, inspect, save = {}, choi
       t.progress(null);
       t.status(`${f.name}: ${fmtBytes(f.size)}`);
       try {
-        const i = inspect ? await inspect(f, { choice: pick?.value, arrived }) : {};
+        const i = inspect ? await inspect(f, { choice: pick?.value, arrived, options: opts }) : {};
         if (id !== opened) return;
         info = i || {};
         if (pick && arrived && info.choice) pick.value = info.choice;
@@ -76,14 +87,15 @@ export function transformOp({ verb, transform, outName, inspect, save = {}, choi
       }
       file = f;
       about.textContent = info.text || '';
-      nameInput.value = outName(f, info, pick?.value);
+      nameInput.value = outName(f, info, pick?.value, opts);
       ready(true);
     }
 
     async function run() {
       const src = file;
       const picked = pick?.value;
-      const name = nameInput.value.trim() || outName(src, info, picked);
+      const options = { ...opts };
+      const name = nameInput.value.trim() || outName(src, info, picked, options);
       busy = true;
       ready(false);
       let read = 0;
@@ -91,7 +103,7 @@ export function transformOp({ verb, transform, outName, inspect, save = {}, choi
       try {
         const onBytes = (n) => t.progress(read += n, src.size);
         const stream = () => src.stream().pipeThrough(countBytes(onBytes));
-        const blob = await streamToBlob(transform({ file: src, info, stream, onBytes, choice: picked }));
+        const blob = await streamToBlob(transform({ file: src, info, stream, onBytes, choice: picked, options }));
         made.add(name, blob, typeof save === 'function' ? save(picked) : save);
         t.status(`${src.name} -> ${name} (${fmtBytes(blob.size)})`);
       } catch (e) {
@@ -103,6 +115,13 @@ export function transformOp({ verb, transform, outName, inspect, save = {}, choi
       }
     }
 
-    return { addFiles: ([f]) => open(f.file), products: made };
+    const getOptions = () => ({ ...opts, ...(pick && choice.option ? { [choice.option]: pick.value } : {}) });
+    function setOptions(values) {
+      opts = { ...opts, ...values };
+      if (pick && choice.option && values[choice.option] != null) pick.value = values[choice.option];
+      if (current && !busy) open(current, false);
+    }
+
+    return { addFiles: ([f]) => open(f.file), products: made, getOptions, setOptions };
   };
 }

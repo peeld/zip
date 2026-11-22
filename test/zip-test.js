@@ -22,7 +22,8 @@ import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
-import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig } from '../public/lib/image.js';
+import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig, resizedSize, OUTPUTS } from '../public/lib/image.js';
+import { tokenize, quote, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from '../public/core/options.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
 
 const log = [];
@@ -656,6 +657,25 @@ async function run() {
     check((await run(hexEncode(txt('')))).length === 0, 'hex: empty file');
     check(same(await run(hexDecode(chunked(xxd, 5))), rnd), 'unhex: xxd dump (5-byte chunks)');
     check(same(await run(hexDecode(chunked(await run(hexEncode(chunked(rnd, 999))), 4096))), rnd), 'unhex: round trip');
+    for (const [flags, o] of [['-c7-g3', { cols: 7, group: 3 }], ['-u-g0', { upper: true, group: 0 }], ['-g20', { group: 20 }],
+      ['-c256-g1', { cols: 256, group: 1 }], ['-c1-g1', { cols: 1, group: 1 }], ['-u-c12-g4', { upper: true, cols: 12, group: 4 }],
+      ['-p-c8', { plain: true, cols: 8 }], ['-p-u', { plain: true, upper: true }]]) {
+      const want = await bytes(await fx2(`random${flags}.xxd`));
+      const got = await run(hexEncode(chunked(rnd.subarray(0, 5000), 13), o));
+      check(same(got, want), `hex ${flags}: matches xxd byte for byte (${got.length} / ${want.length} bytes)`);
+      check(same(await run(hexDecode(chunked(got, 777))), rnd.subarray(0, 5000)), `unhex: reads hex ${flags} back`);
+    }
+    // -s / -l / -o: the op slices the file (hexRange) and starts the offsets there.
+    const { hexRange } = await import('../public/ops/hex/op.js');
+    for (const [flags, o] of [['-s20-l100', { seek: 20, len: 100 }], ['-s-50', { seek: -50 }], ['-s100-o4096-c8', { seek: 100, offset: 4096, cols: 8 }],
+      ['-s0x10-l0x20-p', { seek: 16, len: 32, plain: true }], ['-l0', { len: 0 }], ['-s9999', { seek: 9999 }], ['-o0x1fffffff0-l64', { offset: 0x1fffffff0, len: 64 }]]) {
+      const want = await bytes(await fx2(`random${flags}.xxd`));
+      const [start, end] = hexRange(5000, o);
+      const got = await run(hexEncode(chunked(rnd.subarray(start, end), 13), { ...o, offset: start + (o.offset || 0) }));
+      check(same(got, want), `hex ${flags}: matches xxd byte for byte (${got.length} / ${want.length} bytes)`);
+    }
+    check(hexRange(100, { seek: -100 }).join() === '0,100' && (await fail((async () => hexRange(100, { seek: -101 }))())).includes('the file is 100 bytes')
+      && hexRange(100, { seek: 90, len: 50 }).join() === '90,100', 'hexRange: from the end, past the start, past the end');
     const hello = await bytes(await fx2('src/unicodé 名前.txt'));
     check(same(await run(hexDecode((await fx2('hello.xxd')).stream())), hello), 'unhex: xxd -u -c 8 -g 1');
     check(same(await run(hexDecode(chunked(await bytes(await fx2('random.p.hex')), 3))), rnd.subarray(0, 10000)), 'unhex: xxd -p (plain, 3-byte chunks)');
@@ -1233,6 +1253,55 @@ async function run() {
       }
     }
     check(offloadStats.jobs - jobs === conversions.length, `convert: the conversions ran in a worker (${offloadStats.jobs - jobs} jobs)`);
+
+    // The viewer's Image mode.
+    const v = viewer();
+    document.body.append(v.el);
+    const showImg = async (name, blob, opts = { blob }) => v.show(name, new Uint8Array(await blob.slice(0, 1000).arrayBuffer()), blob.size, opts);
+    const btn = (label) => [...v.el.querySelectorAll('button')].find((b) => b.textContent === label);
+    await showImg('opaque.png', await img('opaque.png'));
+    check(v.mode === 'image' && v.image.naturalWidth === 64 && v.image.src.startsWith('blob:') && v.el.textContent.includes('PNG, 64 × 48')
+      && !btn('Image').hidden, `viewer: a PNG opens as an image (${v.mode}, ${v.el.textContent.slice(0, 80)})`);
+    btn('Hex').click();
+    check(v.mode === 'hex' && v.image.hidden && v.content.startsWith('00000000  89 50 4e 47'), 'viewer: Hex shows the bytes of an image');
+    btn('Image').click();
+    check(v.mode === 'image' && !v.image.hidden, 'viewer: back to Image');
+    const first = v.image.src;
+    await showImg('alpha.qoi', await img('alpha.qoi'));
+    check(v.mode === 'image' && v.image.naturalWidth === 40 && v.el.textContent.includes('QOI, 40 × 24') && first !== v.image.src,
+      `viewer: a QOI is converted to show it (${v.el.textContent.slice(0, 80)})`);
+    await showImg('icons.ico', await img('icons.ico'));
+    check(v.mode === 'image' && v.image.classList.contains('tiny'), 'viewer: a 48 x 48 icon is shown bigger');
+    const svg = new Blob(['<?xml version="1.0"?>\n<!-- c -->\n<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
+      + '<script>parent.svgRan = 1</script><image href="/fixtures/img/opaque.png" width="5" height="5"/><rect width="20" height="10" fill="red"/></svg>']);
+    await showImg('pic.svg', svg);
+    check(v.mode === 'image' && v.image.naturalWidth === 20 && !v.image.classList.contains('tiny') && !window.svgRan
+      && !v.el.querySelector('svg, script, iframe, object, embed') && !btn('Text').disabled,
+      `viewer: an SVG is shown through <img> only, its script never runs (${v.mode}, ${v.image.naturalWidth})`);
+    btn('Text').click();
+    check(v.mode === 'text' && v.content.includes('<script>'), 'viewer: an SVG can still be read as text');
+    // A PNG signature and IHDR, then junk.
+    const sigIhdr = new Uint8Array(await (await img('opaque.png')).slice(0, 33).arrayBuffer());
+    await showImg('broken.png', new Blob([sigIhdr, new Uint8Array(200).fill(7)]));
+    check(v.mode === 'hex' && btn('Image').hidden && v.el.textContent.includes("can't show the image"),
+      `viewer: an image that won't decode stays in hex and says so (${v.el.textContent.slice(0, 90)})`);
+    await showImg('opaque.png', await img('opaque.png'), {});
+    check(v.mode === 'hex' && btn('Image').hidden, 'viewer: no blob, no preview');
+    let calls = 0;
+    await v.show('big.png', new Uint8Array(await (await img('opaque.png')).slice(0, 1000).arrayBuffer()), 100 << 20,
+      { blob: async () => { calls++; return img('opaque.png'); } });
+    check(v.mode === 'hex' && calls === 0 && v.el.textContent.includes('too big to preview'), 'viewer: a huge image isn\'t read');
+    await v.show('later.png', new Uint8Array(await (await img('opaque.png')).slice(0, 1000).arrayBuffer()), 2000,
+      { blob: async () => { calls++; return img('opaque.png'); } });
+    check(calls === 1 && v.mode === 'image', 'viewer: the whole file is read through blob() only for an image');
+    const slow = v.show('slow.png', new Uint8Array(await (await img('opaque.png')).slice(0, 1000).arrayBuffer()), 2000,
+      { blob: async () => { await new Promise((r) => setTimeout(r, 200)); return img('opaque.png'); } });
+    v.show('notes.txt', new TextEncoder().encode('hello'), 5, { blob: new Blob(['hello']) });
+    await slow;
+    check(v.mode === 'text' && v.image.hidden && v.el.textContent.includes('notes.txt'), 'viewer: a slow image load doesn\'t replace the next file');
+    v.close();
+    check(!v.image.getAttribute('src'), 'viewer: close drops the image');
+    v.el.remove();
   }
 
   // 7a. Routing dropped files to an op.
@@ -1722,9 +1791,380 @@ async function workerTests() {
     `offload: without worker-src it falls back to the page (${no.unxz}, ${JSON.stringify(n)})`);
 }
 
+// Command options (core/options.js), resize, and the options popup in the real page.
+async function optionsTests() {
+  const convert = OPS.find((o) => o.id === 'convert');
+  check(tokenize(`convert  "my file.png" -q80 'a b' x\\ y ""`).join('|') === 'convert|my file.png|-q80|a b|x y|'
+    && tokenize('"unclosed q').join('|') === 'unclosed q', 'tokenize: quotes, escapes, empty words');
+  check(['plain', 'two words', 'a"b', ''].every((w) => tokenize(quote(w))[0] === w), 'quote: tokenize gives the word back');
+  const p = (line) => parseArgs(convert, tokenize(line));
+  const a = p('JPG -q 80 --width=50% -h400px');
+  check(JSON.stringify(a.values) === '{"to":"jpeg","quality":80,"width":"50%","height":"400"}' && !a.errors.length,
+    `parseArgs: positional alias, -q 80, --width=, -h400px (${JSON.stringify(a)})`);
+  check(p('-q80 --quality 70').values.quality === 70 && p('WebP').values.to === 'webp', 'parseArgs: -q80, the last one wins, labels match');
+  const bad = p('gif -q 0 -x --bogus -w 0 png -q');
+  check(bad.errors.join(' / ') === "to must be one of png, jpeg, webp, ico, bmp, tga, qoi, ppm (not 'gif') / quality must be a whole number from 1 to 100 (not '0')"
+    + " / unknown option -x / unknown option --bogus / width must be pixels or a percentage, like 800 or 50% (not '0') / -q needs a value",
+    `parseArgs: errors (${bad.errors.join(' / ')})`);
+  check(p('png jpeg').errors[0] === "'jpeg': to is already png", 'parseArgs: one positional');
+  const gz = OPS.find((o) => o.id === 'gzip');
+  check(parseArgs(gz, ['-9']).errors[0] === 'unknown option -9' && parseArgs(gz, ['x']).errors[0].startsWith("unexpected 'x'"),
+    'parseArgs: an op without options takes none');
+  const boolOp = { id: 't', options: [{ name: 'fast', type: 'bool', default: false }, { name: 'name', type: 'text', default: '' }] };
+  check(parseArgs(boolOp, ['--fast']).values.fast === true && parseArgs(boolOp, ['--no-fast']).values.fast === false
+    && parseArgs(boolOp, ['--fast=off']).values.fast === false && formatArgs(boolOp, { fast: true, name: 'my photos.zip' }) === '--fast --name "my photos.zip"',
+    'parseArgs / formatArgs: bool and text');
+  const v = { to: 'webp', quality: 75, width: '50%', height: '' };
+  check(formatArgs(convert, v) === 'webp -q 75 -w 50%' && JSON.stringify(p(formatArgs(convert, v)).values) === '{"to":"webp","quality":75,"width":"50%"}'
+    && formatArgs(convert, defaults(convert)) === '', 'formatArgs: positional first, only what differs, round trip');
+  const help = optionHelp(convert);
+  check(help[0].startsWith('[png|jpeg|webp|ico|bmp|tga|qoi|ppm]') && help.some((l) => /^-q, --quality <1-100> +JPEG \/ WebP quality \(default 90\)$/.test(l)),
+    `optionHelp (${help.join(' | ')})`);
+  check(completeArg(convert, [], 'w').join() === 'webp' && completeArg(convert, [], '--w').join() === '--width'
+    && completeArg(convert, [], '-').length === 3 && completeArg(OPS.find((o) => o.id === 'encode'), [], 'base').join() === 'base32,base32hex',
+    'completeArg: values and flags');
+  // The registry's lists match the ops' own.
+  check(convert.options[0].values.map(([id]) => id).join() === OUTPUTS.map((o) => o.id).join()
+    && ['encode', 'decode'].every((id) => OPS.find((o) => o.id === id).options[0].values.map(([x]) => x).join() === ENCODINGS.map((e) => e.id).join()),
+    'registry options match lib/image.js OUTPUTS and lib/textenc.js ENCODINGS');
+  let got = null;
+  const form = optionsForm(convert, { ...defaults(convert), quality: 60 }, (vals) => { got = vals; });
+  check(form.fields.to.value === 'png' && form.fields.quality.value === '60' && form.el.querySelectorAll('label').length === 4, 'optionsForm: fields set');
+  form.fields.width.value = '25%';
+  form.fields.width.dispatchEvent(new Event('input'));
+  check(JSON.stringify(got) === '{"to":"png","quality":60,"width":"25%","height":""}', `optionsForm: reports every value on a change (${JSON.stringify(got)})`);
+
+  // The pack ops: a positional name, and -0 for --no-compress.
+  const zipOp = OPS.find((o) => o.id === 'zip'), tarOp = OPS.find((o) => o.id === 'tar');
+  const z = parseArgs(zipOp, tokenize('"my photos" -0'));
+  check(JSON.stringify(z.values) === '{"name":"my photos","compress":false}' && !z.errors.length
+    && formatArgs(zipOp, z.values) === '"my photos" -0' && formatArgs(zipOp, { name: '', compress: true }) === ''
+    && parseArgs(zipOp, ['--compress']).values.compress === true && parseArgs(zipOp, ['--no-compress']).values.compress === false,
+    `zip options: name, -0, --compress (${JSON.stringify(z)})`);
+  check(parseArgs(zipOp, ['a', 'b']).errors[0] === "'b': name is already a", 'zip options: one name');
+  check(JSON.stringify(parseArgs(tarOp, ['-z', 'x']).values) === '{"gzip":true,"name":"x"}' && formatArgs(tarOp, { gzip: false }) === '--no-gzip',
+    'tar options: -z / --no-gzip');
+  const zh = optionHelp(zipOp);
+  check(/^\[name\] +the archive's name/.test(zh[0]) && /^-0, --no-compress +deflate the files .*\(on by default\)$/.test(zh[1]),
+    `optionHelp: a text positional and a -0 flag (${zh.join(' | ')})`);
+  check(completeArg(zipOp, [], '--').join() === '--compress,--no-compress' && completeArg(zipOp, [], 'x').length === 0, 'completeArg: zip');
+
+  // A set (hash algorithms): several words, or a comma list, kept in the list's order.
+  const hashOp = OPS.find((o) => o.id === 'hash');
+  const hp = (line) => parseArgs(hashOp, tokenize(line));
+  check(hp('SHA1 md5').values.algos.join() === 'md5,sha1' && hp('-a sha-256,crc').values.algos.join() === 'crc32,sha256'
+    && hp('md5 md5').values.algos.join() === 'md5' && hp('--algos=sha512').values.algos.join() === 'sha512',
+    'parseArgs: a set from words, a comma list, labels, aliases, no repeats');
+  check(hp('md5 blake3').errors[0] === "algos must be some of crc32, md5, sha1, sha256, sha384, sha512 (not 'blake3')"
+    && hp('-a ""').errors[0].startsWith('algos: pick at least one'), `parseArgs: set errors (${hp('-a ""').errors})`);
+  check(formatArgs(hashOp, { algos: ['md5', 'sha1'] }) === 'md5 sha1' && formatArgs(hashOp, { algos: ['sha256'] }) === ''
+    && formatArgs(hashOp, { algos: [] }) === '-a ""' && sameValue(defaults(hashOp).algos, ['sha256']),
+    'formatArgs: a set as words, the default left out, none as an error to see');
+  check(completeArg(hashOp, ['md5'], 'm').length === 0 && completeArg(hashOp, [], 'sha').join() === 'sha1,sha256,sha384,sha512'
+    && completeArg(hashOp, [], '-').join() === '--algos,--check', 'completeArg: a set leaves out what is typed');
+  check(hashOp.options[0].values.map(([id, label]) => `${id}=${label}`).join() === ALGOS.map((a) => `${a.id}=${a.label}`).join(),
+    'registry hash algos match lib/hash.js ALGOS');
+  let hv = null;
+  const hf = optionsForm(hashOp, { algos: ['md5'] }, (vals) => { hv = vals; });
+  const boxes = hf.el.querySelectorAll('input[type=checkbox]');
+  check(boxes.length === 6 && [...boxes].filter((b) => b.checked).map((b) => b.value).join() === 'md5', 'optionsForm: a set is checkboxes');
+  boxes[3].checked = true;
+  boxes[3].dispatchEvent(new Event('change', { bubbles: true }));
+  check(hv?.algos.join() === 'md5,sha256', `optionsForm: a set reports its boxes (${hv?.algos})`);
+
+  // An int without a default (hex -c): blank in the popup, left to the op.
+  const hexOp = OPS.find((o) => o.id === 'hex');
+  const hx = parseArgs(hexOp, tokenize('-c 8 -g1 -up'));
+  check(JSON.stringify(hx.values) === '{"cols":8,"group":1,"upper":true,"plain":true}' && hx.errors.length === 0,
+    `parseArgs: -c 8 -g1, and -up is -u -p (${JSON.stringify(hx)})`);
+  check(parseArgs(hexOp, ['-ux']).errors[0] === "upper must be on or off (not 'x')", 'parseArgs: a bundle with a non-flag in it is an error');
+  check(parseArgs(hexOp, ['-u', '-p']).values.plain === true && formatArgs(hexOp, defaults(hexOp)) === ''
+    && formatArgs(hexOp, { cols: 4, plain: true }) === '-c 4 --plain' && parseArgs(hexOp, ['-c', '0']).errors[0] === "cols must be a whole number from 1 to 256 (not '0')",
+    'hex options: flags, formatting, range');
+  const sx = parseArgs(hexOp, tokenize('-s -10 -l 0x20 --offset=4096'));
+  check(JSON.stringify(sx.values) === '{"seek":-10,"len":32,"offset":4096}' && !sx.errors.length
+    && parseArgs(hexOp, ['-l', '-1']).errors[0] === "len must be a whole number of 0 or more (not '-1')"
+    && parseArgs(hexOp, ['-s', '0x']).errors.length === 1 && formatArgs(hexOp, { seek: -10, len: 32 }) === '-s -10 -l 32'
+    && optionHelp(hexOp).some((l) => l.startsWith('-s, --seek <offset>  ')), `hex -s / -l / -o: negative, 0x, open ranges (${JSON.stringify(sx)})`);
+  const gzOp = OPS.find((o) => o.id === 'gzip'), uuOp = OPS.find((o) => o.id === 'uuencode');
+  check(parseArgs(gzOp, ['-n']).values.name === false && parseArgs(gzOp, ['-N']).values.name === true && formatArgs(gzOp, { name: false }) === '-n'
+    && parseArgs(uuOp, ['remote.bin']).values.name === 'remote.bin' && formatArgs(uuOp, { name: 'a b' }) === '"a b"'
+    && parseArgs(hashOp, tokenize('md5 --check d41d8cd98f00b204e9800998ecf8427e')).values.check === 'd41d8cd98f00b204e9800998ecf8427e',
+  'gzip -n / -N, uuencode [name], hash --check');
+  let xv = null;
+  const xf = optionsForm(hexOp, defaults(hexOp), (vals) => { xv = vals; });
+  xf.fields.group.value = '4';
+  xf.fields.group.dispatchEvent(new Event('input'));
+  check(xf.fields.cols.value === '' && xf.fields.cols.placeholder === '16' && xv.cols === undefined && xv.group === 4,
+    'optionsForm: an int without a default stays blank');
+
+  // Every op with options reports its own defaults when mounted without any.
+  for (const op of OPS.filter((o) => o.options)) {
+    const api = (await import(`../public/ops/${op.id}/op.js`)).mount(document.createElement('div'));
+    const own = api.getOptions?.() || {};
+    const off = Object.keys(own).filter((k) => !sameValue(own[k], defaults(op)[k]));
+    check(!off.length, `${op.id}: mounted bare, what it reports is the registry defaults${off.length ? ` (${off.map((k) => `${k}=${own[k]}`)})` : ''}`);
+  }
+
+  // Resize.
+  check(resizedSize(64, 48, {}).join() === '64,48' && resizedSize(64, 48, { width: '32' }).join() === '32,24'
+    && resizedSize(64, 48, { height: '50%' }).join() === '32,24' && resizedSize(64, 48, { width: '10', height: '10' }).join() === '10,8'
+    && resizedSize(64, 48, { width: '200%', height: '' }).join() === '128,96' && resizedSize(3, 1000, { width: '1%' }).join() === '1,10',
+    'resizedSize: one side, percentages, fit inside both, at least 1');
+  const png = await fx2('img/opaque.png');
+  const info = await imageInfo(png);
+  check(imageNotes(info, 'jpeg', { quality: 70, width: '32' }).join('; ') === 'resized to 32 × 24; lossy, quality 70'
+    && imageNotes(info, 'png', { width: '64' })[0] === 'already that size', 'imageNotes: resize and quality');
+  const size = async (blob) => { const b = await createImageBitmap(blob); const r = [b.width, b.height]; b.close(); return r.join('x'); };
+  const via = async (blob, args) => streamToBlob(offload('image', blob, args));
+  check(await size(await via(png, { type: 'png', width: '32' })) === '32x24' && await size(await via(png, { type: 'webp', width: '10', height: '10' })) === '10x8',
+    'convert: resized in a worker');
+  const tgaBlob = await via(await fx2('img/alpha.qoi'), { type: 'tga', width: '20' });
+  check((await imageInfo(new File([tgaBlob], 'x.tga'))).width === 20, 'convert: QOI -> TGA resized (through the canvas)');
+  const ico = await via(png, { type: 'ico', width: '200%' });
+  const icoInfo = await imageInfo(new File([ico], 'x.ico'));
+  check(icoInfo.sizes === 3 && icoInfo.width === 48, 'convert: an ICO of an image enlarged to 128 x 96 holds 16, 32, 48 (no 256: too small)');
+  const checker = await via(await fx2('img/checker.png'), { type: 'png', width: '10%' });
+  const cb = await createImageBitmap(checker);
+  const cc = new OffscreenCanvas(cb.width, cb.height).getContext('2d');
+  cc.drawImage(cb, 0, 0);
+  const px = cc.getImageData(0, 0, cb.width, cb.height).data;
+  let lo = 255, hi = 0;
+  for (let i = 0; i < px.length; i += 4) { lo = Math.min(lo, px[i]); hi = Math.max(hi, px[i]); }
+  check(cb.width === 30 && lo >= 96 && hi <= 160, `convert: a checkerboard shrunk to 10% is grey (${cb.width} px, ${lo}-${hi})`);
+  const lowQ = await via(png, { type: 'jpeg', quality: 0.2 }), highQ = await via(png, { type: 'jpeg', quality: 0.95 });
+  check(lowQ.size < highQ.size, `convert: quality changes the JPEG (${lowQ.size} < ${highQ.size} bytes)`);
+
+  // transformOp gets the options.
+  const mod = await import('../public/ops/convert/op.js');
+  const root = document.createElement('div');
+  let opened = 0;
+  const api = mod.mount(root, { options: { to: 'webp', quality: 50, width: '', height: '' }, openOptions: () => opened++ });
+  const sel = root.querySelector('select');
+  check(sel.value === 'webp' && api.getOptions().quality === 50, 'transformOp: starts from the given options');
+  [...root.querySelectorAll('button')].find((b) => b.textContent === 'options').click();
+  check(opened === 1, 'transformOp: [options] opens the popup');
+  await api.addFiles([{ path: 'opaque.png', file: new File([png], 'opaque.png') }]);
+  await new Promise((r) => setTimeout(r, 100));
+  api.setOptions({ to: 'jpeg', width: '50%' });
+  await new Promise((r) => setTimeout(r, 100));
+  const text = root.querySelector('.muted')?.textContent || '';
+  check(sel.value === 'jpeg' && text.includes('As JPEG: resized to 32 × 24;') && text.includes('quality 50') && api.getOptions().width === '50%',
+    `transformOp: setOptions re-checks the file (${text})`);
+
+  // The ops given options through mount, as the shell does.
+  const wait = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 50)); return cond(); };
+  const press = (r, label) => [...r.querySelectorAll('button')].find((b) => b.textContent === label).click();
+  const items = [{ path: 'a.txt', file: new File(['hello '.repeat(200)], 'a.txt') }];
+  {
+    const r = document.createElement('div');
+    let o = 0;
+    const zapi = (await import('../public/ops/zip/op.js')).mount(r, { options: { name: 'photos', compress: false }, openOptions: () => o++ });
+    const [nameBox, box] = r.querySelectorAll('input');
+    check(nameBox.value === 'photos.zip' && !box.checked && JSON.stringify(zapi.getOptions()) === '{"name":"photos.zip","compress":false}',
+      `packOp: starts from the given options (${JSON.stringify(zapi.getOptions())})`);
+    press(r, 'options');
+    check(o === 1, 'packOp: [options] opens the popup');
+    zapi.setFiles(items);
+    press(r, 'Create zip');
+    await wait(() => zapi.products.items.length);
+    const [e] = await readZip(zapi.products.items[0].blob);
+    check(zapi.products.items[0].name === 'photos.zip' && e.method === 0, `zip -0: stored, not deflated (method ${e?.method})`);
+    zapi.setOptions({ compress: true, name: '' });
+    check(nameBox.value === 'archive.zip' && box.checked && JSON.stringify(zapi.getOptions()) === '{"name":"","compress":true}',
+      'packOp: setOptions; the default name reports as none');
+    const t = document.createElement('div');
+    const tapi = (await import('../public/ops/tar/op.js')).mount(t, { options: { name: 'backup', gzip: true } });
+    const tn = t.querySelector('input');
+    tapi.setOptions({ gzip: false });
+    check(tn.value === 'backup.tar' && tapi.getOptions().gzip === false, `tar --no-gzip: the name follows (${tn.value})`);
+    tapi.setOptions({ name: 'x.tar.gz', gzip: true });
+    check(tn.value === 'x.tar.gz', 'tar: a name that already has the extension keeps it');
+  }
+  {
+    const r = document.createElement('div');
+    const bapi = (await import('../public/ops/base64/op.js')).mount(r, { options: { wrap: 0 } });
+    await bapi.addFiles(items);
+    press(r, 'Encode');
+    await wait(() => bapi.products.items.length);
+    const b64 = await bapi.products.items[0].blob.text();
+    check(b64 === `${btoa('hello '.repeat(200))}`, `base64 -w 0: one line, no newline (${b64.length} chars)`);
+    bapi.setOptions({ wrap: 10 });
+    await new Promise((res) => setTimeout(res, 50));
+    press(r, 'Encode');
+    await wait(() => bapi.products.items[0]?.blob.size !== b64.length);
+    const lines = (await bapi.products.items[0].blob.text()).split('\n');
+    check(lines[0].length === 10 && lines.at(-1) === '', `base64 -w 10 (${lines[0]})`);
+  }
+  {
+    const r = document.createElement('div');
+    const xapi = (await import('../public/ops/hex/op.js')).mount(r, { options: { cols: 4, group: 1, upper: true, plain: false } });
+    await xapi.addFiles([{ path: 'h', file: new File(['Hi!Z'], 'h') }]);
+    press(r, 'Dump');
+    await wait(() => xapi.products.items.length);
+    const dump = await xapi.products.items[0].blob.text();
+    check(dump === '00000000: 48 69 21 5A  Hi!Z\n', `hex -c 4 -g 1 -u through the op (${JSON.stringify(dump)})`);
+    xapi.setOptions({ seek: -2, len: 1 });
+    await wait(() => r.textContent.includes('bytes 2 to 3'));
+    press(r, 'Dump');
+    await wait(() => xapi.products.items[0]?.blob.size !== dump.length);
+    const part = await xapi.products.items[0].blob.text();
+    check(part === '00000002: 21           !\n' && r.textContent.includes('bytes 2 to 3 (1 of 4)'), `hex -s -2 -l 1 through the op (${JSON.stringify(part)})`);
+    xapi.setOptions({ seek: -5 });
+    await wait(() => r.textContent.includes("can't start"));
+    check(r.querySelector('button.primary').disabled, 'hex -s before the start: an error, nothing to run');
+  }
+  {
+    const r = document.createElement('div');
+    const gapi = (await import('../public/ops/gzip/op.js')).mount(r, { options: { name: false } });
+    await gapi.addFiles([{ path: 'a.txt', file: new File(['hi'], 'a.txt', { lastModified: 1e12 }) }]);
+    press(r, 'Compress');
+    await wait(() => gapi.products.items.length);
+    const gz = await bytes(gapi.products.items[0].blob);
+    check(gz[3] === 0 && gz.subarray(4, 8).every((b) => b === 0) && await new Response(gunzip(gapi.products.items[0].blob)).text() === 'hi',
+      `gzip -n: no name, no time (flags ${gz[3]})`);
+    const r2 = document.createElement('div');
+    const uapi = (await import('../public/ops/uuencode/op.js')).mount(r2, { options: { name: 'other.txt' } });
+    await uapi.addFiles([{ path: 'a.txt', file: new File(['hi'], 'a.txt') }]);
+    press(r2, 'Encode');
+    await wait(() => uapi.products.items.length);
+    const uu = await uapi.products.items[0].blob.text();
+    check(uu.startsWith('begin 644 other.txt\n') && uapi.products.items[0].name === 'a.txt.uu' && r2.textContent.includes('stored as other.txt'),
+      `uuencode a.txt other.txt (${uu.split('\n')[0]})`);
+  }
+  {
+    const r = document.createElement('div');
+    const hapi = (await import('../public/ops/hash/op.js')).mount(r, { options: { algos: ['md5', 'sha1'] } });
+    const on = () => [...r.querySelectorAll('input[type=checkbox]')].filter((b) => b.checked).length;
+    check(on() === 2 && hapi.getOptions().algos.join() === 'md5,sha1', 'hash: starts from the given algorithms');
+    hapi.setOptions({ algos: ['crc32'] });
+    check(on() === 1 && hapi.getOptions().algos.join() === 'crc32', 'hash: setOptions sets the boxes');
+    const md5 = '7d793037a0760186574b0282f2f435e7'; // md5('world')
+    hapi.setOptions({ algos: ['sha1'], check: md5 });
+    const exp = [...r.querySelectorAll('input')].find((i) => i.placeholder.startsWith('paste'));
+    check(exp.value === md5 && hapi.getOptions().check === md5 && hapi.getOptions().algos.join() === 'md5,sha1',
+      `hash --check: fills Expected and ticks the hash its length fits (${hapi.getOptions().algos})`);
+    await hapi.setFiles([{ path: 'w.txt', file: new File(['world'], 'w.txt') }, { path: 'x.txt', file: new File(['x'], 'x.txt') }]);
+    press(r, 'Hash');
+    await wait(() => r.textContent.includes('no match'));
+    check(/match.*no match/s.test(r.querySelector('table')?.textContent || r.textContent), 'hash --check: one file matches, the other not');
+    const r2 = document.createElement('div');
+    const h2 = (await import('../public/ops/hash/op.js')).mount(r2, { options: { algos: ['sha256'], check: md5 } });
+    check(h2.getOptions().algos.join() === 'md5,sha256', 'hash: --check given at mount ticks md5 too');
+  }
+}
+
+/** The prompt and the options popup in the real page (in an iframe). */
+async function shellTests() {
+  const f = document.createElement('iframe');
+  f.style.width = '1200px';
+  f.style.height = '800px';
+  const loadedPage = new Promise((r) => { f.onload = r; });
+  f.src = '/public/index.html';
+  document.body.append(f);
+  await loadedPage;
+  const w = f.contentWindow, d = f.contentDocument;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 50 && !d.getElementById('opts'); i++) await sleep(100);
+  const cmd = d.getElementById('cmd'), popup = d.getElementById('opts'), hint = d.getElementById('hint');
+  const type = (text) => { cmd.value = text; cmd.dispatchEvent(new w.Event('input')); };
+  const key = (k, target = cmd) => target.dispatchEvent(new w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  const field = (name) => d.getElementById(`opt-convert-${name}`);
+  const submit = async () => { d.getElementById('prompt').requestSubmit(); await sleep(300); };
+  try {
+    type('convert');
+    check(popup.hidden, 'shell: no popup until a space follows the command');
+    type('convert ');
+    check(!popup.hidden && field('to')?.value === 'png' && field('quality').value === '90' && popup.textContent.includes('convert options'),
+      'shell: "convert " opens its options popup with the defaults');
+    field('quality').value = '70';
+    field('quality').dispatchEvent(new w.Event('input'));
+    field('width').value = '50%';
+    field('width').dispatchEvent(new w.Event('input'));
+    field('to').value = 'webp';
+    field('to').dispatchEvent(new w.Event('change'));
+    check(cmd.value === 'convert webp -q 70 -w 50% ', `shell: the popup writes the flags into the prompt (${cmd.value})`);
+    type('convert jpeg -q 30 -h 100');
+    check(field('to').value === 'jpeg' && field('quality').value === '30' && field('height').value === '100' && field('width').value === '',
+      'shell: typed flags set the fields');
+    type('convert -q 500');
+    check(popup.querySelector('.popup-errors').textContent.includes('quality must be a whole number from 1 to 100'), 'shell: the popup shows a bad value');
+    type('convert -');
+    key('Tab');
+    check(hint.textContent === '--quality  --width  --height', `shell: Tab lists the flags (${hint.textContent})`);
+    type('convert we');
+    key('Tab');
+    check(cmd.value === 'convert webp ' && field('to').value === 'webp', `shell: Tab completes a value (${cmd.value})`);
+    key('Tab');
+    check(d.activeElement === field('to'), 'shell: Tab with nothing to complete goes into the popup');
+    key('Escape', field('to'));
+    check(popup.hidden && d.activeElement === cmd, 'shell: Escape closes the popup');
+    type('convert webp -q 70 -w 50% ');
+    await submit();
+    for (let i = 0; i < 30 && !d.querySelector('#op-convert select'); i++) await sleep(100);
+    const sel = d.querySelector('#op-convert select');
+    check(popup.hidden && sel?.value === 'webp' && cmd.value === '', 'shell: enter runs convert with the options; the popup closes');
+    type('convert ');
+    check(field('quality').value === '70' && field('width').value === '50%' && field('to').value === 'webp',
+      'shell: the options stick for the next time');
+    type('convert -q 40 ');
+    await submit();
+    type('convert ');
+    check(field('quality').value === '40' && field('width').value === '50%', 'shell: running again changes only what was typed');
+    key('Escape');
+    sel.value = 'bmp';
+    sel.dispatchEvent(new w.Event('change'));
+    [...d.querySelectorAll('#op-convert button')].find((b) => b.textContent === 'options').click();
+    check(!popup.hidden && field('to').value === 'bmp' && cmd.value === 'convert bmp -q 40 -w 50% ' && d.activeElement === field('to'),
+      `shell: the panel's [options] opens the popup with its settings (${cmd.value})`);
+    field('quality').value = '90';
+    field('quality').dispatchEvent(new w.Event('input'));
+    check(cmd.value === 'convert bmp -q 90 -w 50% ', `shell: a value changed back to its default is still written (${cmd.value})`);
+    key('Enter', field('quality'));
+    await sleep(300);
+    type('convert ');
+    check(field('quality').value === '90' && popup.hidden === false, 'shell: Enter in a field runs the line');
+    type('convert -x 3');
+    await submit();
+    const out = d.getElementById('out').textContent;
+    check(out.includes('convert: unknown option -x') && out.includes("type 'help convert' for its options"), 'shell: a bad option is an error, nothing runs');
+    type('help convert');
+    await submit();
+    check(d.getElementById('out').textContent.includes('-q, --quality <1-100>'), 'shell: help convert lists the options');
+    type('encode ');
+    check(!popup.hidden && d.getElementById('opt-encode-format')?.value === 'base32', 'shell: encode has a popup too');
+    type('brotli ');
+    check(popup.hidden, 'shell: no popup for a command without options');
+    type('zip photos -0');
+    await submit();
+    for (let i = 0; i < 30 && !d.querySelector('#op-zip input'); i++) await sleep(100);
+    const [zn, zc] = d.querySelectorAll('#op-zip input');
+    check(zn?.value === 'photos.zip' && zc && !zc.checked, `shell: zip photos -0 sets the name and the box (${zn?.value})`);
+    type('zip ');
+    check(d.getElementById('opt-zip-name')?.value === 'photos.zip' && !d.getElementById('opt-zip-compress').checked,
+      "shell: zip's popup starts from its panel");
+    d.getElementById('opt-zip-compress').checked = true;
+    d.getElementById('opt-zip-compress').dispatchEvent(new w.Event('change'));
+    check(cmd.value === 'zip photos.zip --compress ', `shell: zip's popup writes the line (${cmd.value})`);
+    type('hash md5 sha1');
+    await submit();
+    for (let i = 0; i < 30 && !d.querySelector('#op-hash input[type=checkbox]'); i++) await sleep(100);
+    const hon = [...d.querySelectorAll('#op-hash input[type=checkbox]')].filter((b) => b.checked).length;
+    type('hash ');
+    const set = [...popup.querySelectorAll('input[type=checkbox]')].filter((b) => b.checked).map((b) => b.value).join();
+    check(hon === 2 && set === 'md5,sha1', `shell: hash md5 sha1 ticks those, and the popup shows them (${hon}, ${set})`);
+  } finally {
+    f.remove();
+  }
+}
+
 setOffloadThreshold(0);
+// A stage fails (instead of hanging the runner, which gives up after 180 s in all) if it takes too long.
+const stage = (fn, name, ms = 30000) => () => Promise.race([fn(), new Promise((_, no) => setTimeout(() => no(new Error(`${name} timed out`)), ms))]);
 run()
-  .then(wasmTests)
-  .then(workerTests)
+  .then(stage(optionsTests, 'optionsTests'))
+  .then(stage(shellTests, 'shellTests'))
+  .then(stage(wasmTests, 'wasmTests'))
+  .then(stage(workerTests, 'workerTests'))
   .catch((e) => { failed++; log.push(`FAIL exception: ${e && e.stack || e}`); })
   .finally(() => post('/result', JSON.stringify({ failed, log })));

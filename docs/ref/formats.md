@@ -6,13 +6,13 @@ formats: [../todo/new-ops.md](../todo/new-ops.md).
 
 ## Shared decisions
 - **Encode and decode are two commands** (`gzip` / `gunzip`, `base64` /
-  `unbase64`, `tar` / `untar`, `ar` / `unar`, `cpio` / `uncpio`, `brotli` / `unbrotli`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`), because ops take no arguments yet.
+  `unbase64`, `tar` / `untar`, `ar` / `unar`, `cpio` / `uncpio`, `brotli` / `unbrotli`, `uuencode` / `uudecode`, `hex` / `unhex`, `encode` / `decode`): one word per direction is easier to find in `help` than a `-d` flag.
   Decode-only formats (`unxz`, `unzstd`, `bunzip2`) have no encoder command. Decoders
   accept specific extensions (and content types, `input.sniff`) and go
   *before* `zip` in the registry; encoders take any file and go after it
-  (see [command-line.md](command-line.md), routing). An option an op needs
-  before arguments exist is a checkbox in its panel (tar: gzip on/off), or a
-  select (`transformOp` `choice`; encode/decode: the format).
+  (see [command-line.md](command-line.md), routing). Settings are registry
+  `options` (command-line.md, "Options"), shown in the panel as a checkbox
+  (tar: gzip on/off) or a select (`transformOp` `choice`; encode/decode: the format).
 - **Libraries are streams, with no DOM.** `lib/<format>.js` works on
   ReadableStreams of Uint8Array (`TransformStream`), so multi-GB files never
   have to fit in memory and ops can chain them (`tar` with gzip is
@@ -124,7 +124,8 @@ doesn't check the CRC.
 ## gzip (`lib/gzip.js`)
 - `gzip()` uses native `CompressionStream('gzip')` but swaps its 10-byte
   header for one with FNAME and MTIME, like `gzip -N`. The name is stored
-  only if it fits Latin-1, as the spec requires.
+  only if it fits Latin-1, as the spec requires. Without them (the op's
+  `-n`) the header has neither, as `gzip -n` writes.
 - `parseHeader` reads names as UTF-8 first (many tools write it), then Latin-1.
 - `gunzip()` handles **multi-member files** (`cat a.gz b.gz`, bgzip) itself.
   Firefox's `DecompressionStream` errors on anything after the first member
@@ -334,6 +335,8 @@ doesn't check the CRC.
   "`" for zero, a "`" line, `end`. Byte for byte the same as GNU sharutils
   `uuencode` (tested against Python's `binascii.b2a_uu(backtick=True)`).
   A name with a line break is an error (the op replaces CR/LF with `_`).
+  The op's `[name]` option sets it (`uuencode file name`); the output file is
+  still `<file>.uu`.
 - The decoder is an **archive reader**, because one input (an email, a news
   post) can hold several `begin … end` blocks with other text around them.
   `readUu(file)` scans the whole input once and lists
@@ -353,9 +356,17 @@ doesn't check the CRC.
   sniffed; it goes by name (`.uu`, `.uue`) or by running `uudecode`.
 
 ## hex (`lib/hex.js`)
-- `hexEncode`: the default `xxd` format, byte for byte (tested against the
+- `hexEncode`: the `xxd` format, byte for byte (tested against the
   real `xxd`): 8-digit offset (more above 4 GB, like `%08lx`), 16 bytes a
   line in 2-byte groups, two spaces, the text column (`.` for non-printable).
+  `{ cols, group, upper, plain }` are xxd's `-c` (1–256), `-g` (0 or more
+  than cols: one group), `-u` (hex digits only; the offset stays lower case)
+  and `-p` (30 bytes a line by default). The text column starts where xxd.c
+  puts it: `2 + ((2g + 1) × cols − 1) / g` after the `: `. `offset` is the
+  first line's offset: the op's `-s` (a slice of the file; negative counts
+  from the end, as xxd does on a file) and `-o` (added to what's shown) set
+  it, and `-l` ends the slice (`hexRange` in `ops/hex/op.js`). Numbers are
+  decimal or `0x` hex; xxd's leading-zero octal isn't copied.
 - `hexDecode` (like `xxd -r`) picks the format from the first non-blank line
   (`hexFormat`):
   - **xxd**: `offset:` then hex groups, any `-c` / `-g`, upper or lower case.
@@ -601,6 +612,19 @@ doesn't check the CRC.
 - **Damaged input:** Firefox's decoder gives back whatever it could decode
   of a cut-off or corrupt image (as `<img>` would show it) instead of an
   error; only a file with no usable header fails.
+- **Preview (`core/viewer.js` Image mode):** `previewType(firstBytes, name)`
+  says whether the viewer's first bytes are an image it can show: SVG (by
+  its start: optional XML declaration, comments, doctype, then `<svg`),
+  whatever `sniffImage` finds (a TGA by name only, since only the start is
+  read). Callers pass `{ blob }` (the file, or an async function that reads
+  a whole archive entry), which is only read when it's an image. The image
+  is shown through `<img>` from a `blob:` URL typed with the right mime
+  (SVG needs `image/svg+xml`); TGA / QOI / PNM go through `convertImage` to
+  PNG first (the `image` task). Not previewed: over 64 MB (SVG: 8 MB, since
+  it's rasterised on the page) or over 100 megapixels by the header. A file
+  that won't decode stays in text / hex with a note. Images up to 48 px are
+  shown at 8rem, pixelated; transparency gets a checkerboard. Each show bumps
+  a counter, so a slow load never lands on a later file.
 
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,

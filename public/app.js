@@ -15,6 +15,7 @@
 import { OPS, GROUPS } from './ops/registry.js';
 import { chooseFiles, filesFromDrop, pickOp } from './core/files.js';
 import { fmtBytes } from './core/ui.js';
+import { tokenize, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from './core/options.js';
 
 const out = document.getElementById('out');
 const form = document.getElementById('prompt');
@@ -26,6 +27,7 @@ const fileView = document.getElementById('file-view');
 const uploaded = []; // { path, file }[] for this visit, in arrival order
 const loaded = new Map(); // op id -> { panel, api } (kept, so op state survives)
 let current = null; // id of the op on screen
+const settings = new Map(); // op id -> option values set this visit (typed or in the popup)
 const past = []; // command history
 let histPos = 0;
 
@@ -105,16 +107,24 @@ function helpCmd(op) {
     el('div', {}, cmdLink(op.id), ` - ${op.title}`),
     line(`  ${op.description}`),
     ...(op.input ? [line(`  takes: ${takes(op.input)}`)] : []),
+    ...(op.options ? [line('  options:'), ...optionHelp(op).map((l) => line(`    ${l}`))] : []),
     line(`  group: ${GROUPS[op.group] || 'other'}`),
     line(`  link:  #${op.id}`, 'muted'));
 }
 
-/** Show an op, loading its code on first use. Resolves to its API, or null if it failed to load. */
-async function runOp(op, cmd) {
+/** An op's option values now: what its panel says if it's loaded, else what was set this visit, else the defaults. */
+function optionValues(op) {
+  return { ...defaults(op), ...settings.get(op.id), ...loaded.get(op.id)?.api?.getOptions?.() };
+}
+
+/** Show an op, loading its code on first use. `values`: options to set. Resolves to its API, or null if it failed to load. */
+async function runOp(op, cmd, values = {}) {
   setCurrent(op.id);
+  if (op.options) settings.set(op.id, { ...optionValues(op), ...values });
   const existing = loaded.get(op.id);
   if (existing && !existing.failed) {
     screen(cmd, existing.panel);
+    if (Object.keys(values).length) existing.api?.setOptions?.(values);
     return existing.api;
   }
 
@@ -127,7 +137,7 @@ async function runOp(op, cmd) {
   try {
     const mod = await import(`./ops/${op.id}/op.js`);
     body.replaceChildren();
-    entry.api = mod.mount(body) || {};
+    entry.api = mod.mount(body, op.options ? { options: settings.get(op.id), openOptions: () => editOptions(op) } : {}) || {};
     entry.api.setFiles?.([...uploaded]);
   } catch (e) {
     body.textContent = `${op.id}: couldn't load: ${e.message}`;
@@ -143,12 +153,21 @@ function run(cmd) {
   if (!cmd) return;
   if (past[past.length - 1] !== cmd) past.push(cmd);
   histPos = past.length;
-  let [name, ...args] = cmd.split(/\s+/);
+  hidePopup();
+  let [name = '', ...args] = tokenize(cmd);
   name = name.toLowerCase();
   name = ALIASES[name] || name;
 
   const op = OPS.find((o) => o.id === name);
-  if (op) return runOp(op, cmd);
+  if (op) {
+    const { values, errors } = parseArgs(op, args);
+    if (errors.length) {
+      setCurrent(null);
+      return screen(cmd, ...errors.map((e) => line(`${op.id}: ${e}`, 'error')),
+        line(`type 'help ${op.id}' for its options${op.options ? `, or '${op.id} ' and pick them` : ''}.`, 'muted'));
+    }
+    return runOp(op, cmd, values);
+  }
   setCurrent(null);
   if (name === 'clear') screen(null);
   else if (name === 'help') screen(cmd, help(args[0]));
@@ -225,7 +244,7 @@ function renderFiles() {
   fileList.replaceChildren(head, ...rows);
 }
 
-/** Show the start of an uploaded file in the text/hex viewer. */
+/** Show the start of an uploaded file in the viewer (text / hex, or the image). */
 async function viewFile(f) {
   if (!view) {
     const { viewer } = await import('./core/viewer.js');
@@ -235,7 +254,7 @@ async function viewFile(f) {
   viewing = f;
   try {
     const bytes = new Uint8Array(await f.file.slice(0, VIEW_BYTES).arrayBuffer());
-    if (viewing === f) view.show(f.path, bytes, f.file.size);
+    if (viewing === f) await view.show(f.path, bytes, f.file.size, { blob: f.file });
   } catch (e) {
     if (viewing === f) view.error(f.path, e.message);
   }
@@ -267,6 +286,83 @@ async function route(files) {
   if (!api?.setFiles) api?.addFiles?.(files); // setFiles ops already have the whole list
 }
 
+// ---------------------------------------------------------------- options popup
+// Typing a command that has options, then a space, opens a panel of its
+// options under the prompt, set to the op's current values plus what's typed.
+// Changing a field rewrites the prompt (so it shows the flags); typing flags
+// sets the fields. Enter runs the line either way.
+
+const popup = el('div', { id: 'opts', className: 'popup', hidden: true, role: 'group' });
+form.after(popup);
+let popupOp = null; // the op the popup is showing
+let popupForm = null;
+
+function hidePopup() {
+  popup.hidden = true;
+  popupOp = popupForm = null;
+}
+
+/** The op named by the prompt's first word, once a space follows it. */
+function typedOp() {
+  const m = /^\s*(\S+)\s/.exec(input.value);
+  const name = m?.[1].toLowerCase();
+  return m ? OPS.find((o) => o.id === (ALIASES[name] || name)) : null;
+}
+
+/** Show or update the popup from what's typed at the prompt. */
+function syncPopup() {
+  const op = typedOp();
+  if (!op?.options) return hidePopup();
+  const { values, errors } = parseArgs(op, tokenize(input.value).slice(1));
+  const shown = { ...optionValues(op), ...values };
+  if (popupOp !== op) {
+    popupOp = op;
+    popupForm = optionsForm(op, shown, fromPopup);
+    popup.setAttribute('aria-label', `${op.id} options`);
+    popup.replaceChildren(
+      el('div', { className: 'popup-head' }, el('strong', { textContent: op.id }), ' options',
+        el('span', { className: 'spacer' }), el('button', { type: 'button', className: 'link', textContent: 'esc', onclick: closePopup })),
+      popupForm.el,
+      el('div', { className: 'popup-errors error' }),
+      el('div', { className: 'muted', textContent: 'enter runs · tab moves between fields · esc closes' }));
+  } else {
+    popupForm.set(shown);
+  }
+  popup.querySelector('.popup-errors').replaceChildren(...errors.map((e) => line(e)));
+  popup.hidden = false;
+}
+
+/** A field changed: write the prompt line that gives these values. */
+function fromPopup(vals) {
+  const op = popupOp;
+  const now = optionValues(op), dflt = defaults(op);
+  // List what differs from the defaults (the whole setup), and anything changed back to a default.
+  const base = Object.fromEntries(Object.keys(vals).map((k) => [k, sameValue(vals[k], dflt[k]) && sameValue(vals[k], now[k]) ? vals[k] : Symbol('show')]));
+  const args = formatArgs(op, vals, base);
+  input.value = `${op.id} ${args}${args ? ' ' : ''}`;
+  const { errors } = parseArgs(op, tokenize(input.value).slice(1));
+  popup.querySelector('.popup-errors').replaceChildren(...errors.map((e) => line(e)));
+}
+
+function closePopup() {
+  hidePopup();
+  input.focus();
+}
+
+/** Open the popup for an op (its panel's [options] button): the prompt gets its current settings. */
+function editOptions(op) {
+  const args = formatArgs(op, optionValues(op));
+  input.value = `${op.id} ${args}${args ? ' ' : ''}`;
+  syncPopup();
+  popupForm?.focus();
+  popup.scrollIntoView({ block: 'nearest' });
+}
+
+popup.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); closePopup(); }
+  else if (e.key === 'Enter' && e.target.matches('input, select')) { e.preventDefault(); form.requestSubmit(); }
+});
+
 // ---------------------------------------------------------------- input
 
 form.addEventListener('submit', (e) => {
@@ -276,19 +372,41 @@ form.addEventListener('submit', (e) => {
   run(cmd);
 });
 
+input.addEventListener('input', syncPopup);
+
 input.addEventListener('keydown', (e) => {
   if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
     if (!past.length) return;
     e.preventDefault();
     histPos = Math.max(0, Math.min(past.length, histPos + (e.key === 'ArrowUp' ? -1 : 1)));
     input.value = past[histPos] ?? '';
+    syncPopup();
+  } else if (e.key === 'Escape' && !popup.hidden) {
+    e.preventDefault();
+    hidePopup();
+  } else if (e.key === 'Tab' && !e.shiftKey && typedOp()?.options) {
+    // After a command with options: complete the word being typed, or go into the popup.
+    const op = typedOp();
+    const words = tokenize(input.value).slice(1);
+    const last = /\s$/.test(input.value) ? '' : words.pop() ?? '';
+    const matches = last ? completeArg(op, words, last) : [];
+    e.preventDefault();
+    if (matches.length === 1) {
+      input.value = `${input.value.slice(0, input.value.length - last.length)}${matches[0]} `;
+      hint.textContent = '';
+      syncPopup();
+    } else if (matches.length) {
+      hint.textContent = matches.join('  ');
+    } else if (!popup.hidden) {
+      popupForm.focus();
+    }
   } else if (e.key === 'Tab' && input.value.trim() && !e.shiftKey) {
     // Only complete when there is something typed, so Tab still moves focus otherwise.
     const typed = input.value.trimStart().toLowerCase();
     const matches = names().filter((n) => n.startsWith(typed));
     if (!matches.length) return;
     e.preventDefault();
-    if (matches.length === 1) { input.value = matches[0] + ' '; hint.textContent = ''; }
+    if (matches.length === 1) { input.value = matches[0] + ' '; hint.textContent = ''; syncPopup(); }
     else hint.textContent = matches.join('  ');
   }
 });

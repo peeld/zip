@@ -206,6 +206,16 @@ def make_hex_fixtures(work: Path):
     (work / "random.xxd").write_bytes(tool(["xxd"], rnd))
     (work / "random.p.hex").write_bytes(tool(["xxd", "-p"], rnd[:10000]))
     (work / "hello.xxd").write_bytes(tool(["xxd", "-u", "-c", "8", "-g", "1"], SOURCES["unicodé 名前.txt"]))
+    # The hex op's options are xxd's flags: its dumps must match these byte for byte.
+    for flags in (["-c", "7", "-g", "3"], ["-u", "-g", "0"], ["-g", "20"], ["-c", "256", "-g", "1"], ["-c", "1", "-g", "1"],
+                  ["-u", "-c", "12", "-g", "4"], ["-p", "-c", "8"], ["-p", "-u"]):
+        (work / f"random{''.join(flags)}.xxd").write_bytes(tool(["xxd", *flags], rnd[:5000]))
+    # -s / -l / -o: xxd reads a file for these (it can't seek back on a pipe for -s -n).
+    (work / "random5000.bin").write_bytes(rnd[:5000])
+    for flags in (["-s", "20", "-l", "100"], ["-s", "-50"], ["-s", "100", "-o", "4096", "-c", "8"], ["-s", "0x10", "-l", "0x20", "-p"],
+                  ["-l", "0"], ["-s", "9999"], ["-o", "0x1fffffff0", "-l", "64"]):
+        (work / f"random{''.join(flags)}.xxd").write_bytes(
+            subprocess.run(["xxd", *flags, "random5000.bin"], cwd=work, capture_output=True, check=True).stdout)
     # Runs of repeated 16-byte lines, which hexdump -C collapses into '*'.
     rep = b"\0" * 100 + rnd[:5000] + b"\0" * 64 + b"abc"
     (work / "rep.bin").write_bytes(rep)

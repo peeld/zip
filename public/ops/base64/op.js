@@ -1,10 +1,11 @@
-// Op: encode one file as base64 text (76-column lines, like GNU `base64`).
+// Op: encode one file as base64 text, 76-column lines like GNU `base64`, or
+// -w <n> columns (0: one line), a registry option.
 import { transformOp } from '../../core/transform.js';
 import { base64Encode } from '../../lib/base64.js';
 
 export const mount = transformOp({
   verb: 'Encode',
   outName: (file) => `${file.name}.b64`,
-  transform: ({ stream }) => base64Encode(stream()),
+  transform: ({ stream, options }) => base64Encode(stream(), { wrap: options.wrap ?? 76 }),
   save: { description: 'Base64 text', mime: 'text/plain', ext: '.b64' },
 });

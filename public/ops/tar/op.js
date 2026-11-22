@@ -5,7 +5,7 @@ import { gzip } from '../../lib/gzip.js';
 
 export const mount = packOp({
   verb: 'Create tar',
-  option: { label: 'gzip (.tar.gz)', checked: true },
+  option: { name: 'gzip', label: 'gzip (.tar.gz)', checked: true },
   fixName: tarName,
   save: (gz) => gz
     ? { description: 'Gzipped tar archive', mime: 'application/gzip', ext: '.gz' }

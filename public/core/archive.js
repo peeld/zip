@@ -84,7 +84,7 @@ export function archiveOp({ noun, open: openFile, sizeLabel = 'uncompressed' }) 
       const r = reader;
       try {
         const bytes = r.peek ? await r.peek(entry, PEEK_BYTES) : (await readStart(await r.open(entry), PEEK_BYTES)).bytes;
-        if (id === viewing) view.show(entry.name, bytes, entry.size);
+        if (id === viewing) await view.show(entry.name, bytes, entry.size, { blob: async () => streamToBlob(await r.open(entry)) });
       } catch (e) {
         if (id === viewing) view.error(entry.name, e.message);
       }

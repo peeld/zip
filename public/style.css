@@ -46,6 +46,23 @@ b, strong, h2 { color: var(--hi); }
   caret-color: var(--hi); caret-shape: block;
 }
 #hint { min-height: 1.45em; white-space: pre-wrap; }
+
+/* Options popup under the prompt (app.js, core/options.js): name, field, help in three columns. */
+.popup { border: 1px solid var(--dim); padding: .5rem 1ch; margin: .5rem 0 0; background: var(--bg); }
+.popup[hidden] { display: none; }
+.popup-head { display: flex; gap: 1ch; align-items: baseline; margin-bottom: .5rem; color: var(--dim); }
+.opts { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); gap: .35rem 2ch; align-items: baseline; margin-bottom: .5rem; }
+.opt { display: contents; }
+.opt-name { color: var(--hi); }
+.opt-help { overflow-wrap: anywhere; }
+.opt-set { display: flex; flex-wrap: wrap; gap: 0 1.5ch; }
+.opt-set label { white-space: nowrap; }
+.popup-errors:empty { display: none; }
+.popup-errors { margin-bottom: .5rem; }
+@media (max-width: 480px) {
+  .opts { grid-template-columns: max-content minmax(0, 1fr); }
+  .opt-help { grid-column: 2; margin-top: -.25rem; }
+}
 .echo { color: var(--dim); }
 .echo .ps1 { color: var(--dim); }
 .help { margin: 0 0 .75rem; white-space: pre; }
@@ -55,7 +72,7 @@ b, strong, h2 { color: var(--hi); }
 #out section { margin: .5rem 0 1rem; }
 .desc { margin: 0 0 .75rem; color: var(--dim); }
 .desc::before { content: "# "; }
-section[hidden], table[hidden], .viewer[hidden], .viewer pre[hidden] { display: none; }
+section[hidden], table[hidden], .viewer[hidden], .viewer pre[hidden], .viewer img[hidden] { display: none; }
 
 .drop { border: 1px dashed var(--dim); padding: 1rem; margin: 0 0 1rem; color: var(--dim); line-height: 1.9; }
 .drop.over { border-color: var(--hi); color: var(--hi); background: #a6e3ad14; }
@@ -74,7 +91,7 @@ section[hidden], table[hidden], .viewer[hidden], .viewer pre[hidden] { display: 
 .products a.base:hover, .products a.base:focus-visible { background: var(--fg); color: var(--bg); outline: 0; }
 .help a { color: var(--hi); text-decoration: underline dotted; text-underline-offset: 3px; }
 .help a:hover, .help a:focus-visible { background: var(--fg); color: var(--bg); outline: 0; }
-#file-view .viewer pre { max-height: 16rem; }
+#file-view .viewer pre, #file-view .viewer img { max-height: 16rem; }
 
 /* Wide screens: drop zone, files and prompt on the left; command output on the right.
    Narrow screens stack them in the same order. */
@@ -134,3 +151,7 @@ td:first-child { word-break: break-all; width: 100%; }
 .viewer strong { word-break: break-all; }
 .viewer pre { margin: 0; max-height: 24rem; overflow: auto; font: inherit; line-height: 1.35; white-space: pre; }
 .viewer pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Image preview: never wider than the panel; a checkerboard behind transparency. */
+.viewer img { display: block; max-width: 100%; max-height: 24rem; height: auto; object-fit: contain;
+  background: repeating-conic-gradient(#2a2f2a 0 25%, #1a1e1a 0 50%) 0 0 / 16px 16px; }
+.viewer img.tiny { width: 8rem; image-rendering: pixelated; }

@@ -6,7 +6,7 @@ import { gzip } from '../../lib/gzip.js';
 
 export const mount = packOp({
   verb: 'Create cpio',
-  option: { label: 'gzip (.cpio.gz)', checked: false },
+  option: { name: 'gzip', label: 'gzip (.cpio.gz)', checked: false },
   fixName: cpioName,
   save: (gz) => gz
     ? { description: 'Gzipped cpio archive', mime: 'application/gzip', ext: '.gz' }

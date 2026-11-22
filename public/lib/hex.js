@@ -1,7 +1,7 @@
 // Hex dumps. No DOM: works on ReadableStreams of Uint8Array, so large files
 // never have to fit in memory.
 //
-// The encoder writes the default `xxd` format byte for byte:
+// The encoder writes what `xxd` writes, byte for byte (also with -c, -g, -u, -p):
 //   00000000: 4865 6c6c 6f2c 2077 6f72 6c64 210a 0001  Hello, world!...
 // The decoder (like `xxd -r`) reads three formats, chosen by the first
 // non-blank line:
@@ -18,9 +18,9 @@
 const NL = 10, CR = 13, SP = 32, TAB = 9;
 const MAX_LINE = 1 << 16;     // xxd/hexdump lines are short; a longer one is an error
 const MAX_GAP = 1 << 30;      // an xxd offset may jump forward at most 1 GB (zeros)
-const COLS = 16;              // bytes per encoded line
 
 const DIGITS = Uint8Array.from('0123456789abcdef', (c) => c.charCodeAt(0));
+const DIGITS_UP = Uint8Array.from('0123456789ABCDEF', (c) => c.charCodeAt(0));
 const HEXV = new Int8Array(256).fill(-1);
 for (let i = 0; i < 16; i++) { HEXV[DIGITS[i]] = i; HEXV[DIGITS[i] - 32 * (i > 9)] = i; }
 
@@ -40,30 +40,49 @@ export function hexFormat(text) {
   return 'plain';
 }
 
-/** Encode a stream as an `xxd` hex dump (16 bytes a line, 2-byte groups, text column). */
-export function hexEncode(stream) {
-  let carry = new Uint8Array(0); // 0–15 bytes left over from the last chunk
-  let off = 0;
+/**
+ * Encode a stream as an `xxd` hex dump, byte for byte what xxd writes with
+ * the same flags: `cols` bytes a line (-c; default 16, plain 30), `group`
+ * bytes a group (-g; default 2; 0 or more than cols: one group), `upper`
+ * hex digits (-u; the offset stays lower case, as in xxd), `plain` (-p: hex
+ * digits only, no offsets or text column). `offset` is the first line's
+ * offset (xxd -s and -o move it: the dump of a slice shows where it was).
+ */
+export function hexEncode(stream, { cols, group = 2, upper = false, plain = false, offset = 0 } = {}) {
+  cols = cols || (plain ? 30 : 16);
+  const g = group < 1 || group > cols ? cols : group;
+  const digits = upper ? DIGITS_UP : DIGITS;
+  const pad = 2 + Math.floor(((2 * g + 1) * cols - 1) / g); // from after ": " to the text column (xxd.c)
+  const lineMax = plain ? 2 * cols + 1 : 20 + pad + cols;
+  let carry = new Uint8Array(0); // less than a line left over from the last chunk
+  let off = offset;
 
   function encode(b) {
-    const lines = Math.ceil(b.length / COLS);
-    const out = new Uint8Array(lines * 80);
+    const out = new Uint8Array(Math.ceil(b.length / cols) * lineMax);
     let o = 0;
-    for (let s = 0; s < b.length; s += COLS, off += COLS) {
-      const n = Math.min(COLS, b.length - s);
+    for (let s = 0; s < b.length; s += cols, off += cols) {
+      const n = Math.min(cols, b.length - s);
+      if (plain) {
+        for (let i = 0; i < n; i++) {
+          out[o++] = digits[b[s + i] >> 4];
+          out[o++] = digits[b[s + i] & 15];
+        }
+        out[o++] = NL;
+        continue;
+      }
       if (off < 2 ** 32) {
         for (let d = 28; d >= 0; d -= 4) out[o++] = DIGITS[off >>> d & 15];
       } else {
         for (const c of off.toString(16)) out[o++] = c.charCodeAt(0);
       }
       out[o++] = 58; out[o++] = SP; // ': '
-      out.fill(SP, o, o + 41);
+      out.fill(SP, o, o + pad);
       for (let i = 0; i < n; i++) {
-        const p = o + (i >> 1) * 5 + (i & 1) * 2;
-        out[p] = DIGITS[b[s + i] >> 4];
-        out[p + 1] = DIGITS[b[s + i] & 15];
+        const p = o + 2 * i + Math.floor(i / g);
+        out[p] = digits[b[s + i] >> 4];
+        out[p + 1] = digits[b[s + i] & 15];
       }
-      o += 41;
+      o += pad;
       for (let i = 0; i < n; i++) {
         const c = b[s + i];
         out[o++] = c >= 32 && c < 127 ? c : 46;
@@ -81,7 +100,7 @@ export function hexEncode(stream) {
         b.set(carry);
         b.set(chunk, carry.length);
       }
-      const whole = b.length - b.length % COLS;
+      const whole = b.length - b.length % cols;
       carry = b.slice(whole);
       if (whole) ctl.enqueue(encode(b.subarray(0, whole)));
     },

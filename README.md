@@ -15,7 +15,9 @@ a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2
 together with its `SHA256SUMS` (or paste the expected hash). To convert an
 image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM in;
 PNG, JPEG, WebP, ICO, BMP, TGA, QOI, PPM out), run
-`convert` first: a dropped image goes to `zip` otherwise. A single file
+`convert` first: a dropped image goes to `zip` otherwise. Commands with
+settings take them as flags (`convert webp -q 80 -w 50%`, `zip photos -0`, `hash md5 sha1`), or type the
+command and a space to pick them in a popup under the prompt. A single file
 is matched by its content first (a gzipped tar called `backup.dat` still
 opens in `untar`), its name second. `help <command>` says what a command takes. `#unzip` in the
 URL runs that command on load.
@@ -166,7 +168,10 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
 - EXIF rotation is applied; then EXIF (and GPS), XMP, ICC profiles and text
   chunks are dropped, colours are converted to sRGB and 16-bit images become
   8-bit. The op lists what a file will lose before converting it.
-- Transparency becomes white in JPEG, BMP and PPM. JPEG / WebP quality is 0.9.
+- Transparency becomes white in JPEG, BMP and PPM. JPEG / WebP quality is
+  90 unless set (`-q`). Resizing (`-w` / `-h`) shrinks by halves, then a
+  last high-quality `drawImage` step; it goes through the canvas, so a
+  resized image is never pixel-exact.
   Between TGA / QOI / PNM in and BMP / TGA / QOI / PPM out there's no canvas,
   so every pixel is kept exactly; anything else goes through the canvas,
   which loses the colour of fully transparent pixels.

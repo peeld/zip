@@ -30,7 +30,7 @@ export const OUTPUTS = [
   { id: 'ppm', label: 'PPM', mime: 'image/x-portable-pixmap', ext: 'ppm', ours: true },
 ];
 
-export const QUALITY = 0.9; // JPEG and WebP, until the command line takes -q
+export const QUALITY = 0.9; // JPEG and WebP, unless the op is given -q
 
 /** The OUTPUTS entry for an id; throws for an unknown one. */
 export function output(id) {
@@ -56,6 +56,24 @@ const checkSize = (width, height) => {
   const big = tooBig(width, height);
   if (big) throw new Error(big);
 };
+
+/**
+ * The size a width × height image becomes with resize options { width,
+ * height }: each '800' (pixels), '50%' or empty. One given: the other side
+ * keeps the aspect ratio. Both: the largest size that fits inside both. A
+ * side given in pixels comes out exactly that.
+ */
+export function resizedSize(width, height, { width: rw, height: rh } = {}) {
+  const pct = (v) => String(v).endsWith('%');
+  const factor = (v, side) => (!v ? null : pct(v) ? parseFloat(v) / 100 : Number(v) / side);
+  const fw = factor(rw, width), fh = factor(rh, height);
+  if (fw == null && fh == null) return [width, height];
+  const k = fw == null ? fh : fh == null ? fw : Math.min(fw, fh);
+  let w = Math.max(1, Math.round(width * k)), h = Math.max(1, Math.round(height * k));
+  if (k === fw && !pct(rw)) w = Number(rw);
+  if (k === fh && !pct(rh)) h = Number(rh);
+  return [w, h];
+}
 
 /** The sizes an ICO made from a width × height image holds: the usual ones up to its longer side. */
 export function icoSizes(width, height) {
@@ -150,22 +168,27 @@ const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
  * `background` ('#rrggbb') behind transparent pixels. Resolves to a Blob of
  * the output's mime type. Works in a worker. QOI / PNM / TGA in and BMP /
  * TGA / QOI / PPM out go through RGBA pixels without a canvas, so between
- * those it's exact (transparent pixels keep their colour too).
+ * those it's exact (transparent pixels keep their colour too), unless resized.
+ * `width` / `height`: resize (see resizedSize), through scaled().
  */
-export async function convertImage(blob, { type = 'png', quality = QUALITY, background = '#ffffff' } = {}) {
+export async function convertImage(blob, { type = 'png', quality = QUALITY, background = '#ffffff', width: rw, height: rh } = {}) {
   const out = output(type);
   if (!out.ours) needCanvas();
   if (!(await canWrite(out.mime))) throw new Error(`this browser can't write ${out.label}`);
   const src = await load(blob);
-  const { width, height } = src;
   try {
+    checkSize(src.width, src.height);
+    const [width, height] = resizedSize(src.width, src.height, { width: rw, height: rh });
     checkSize(width, height);
-    if (out.id === 'ico') return await writeIco(await bitmapOf(src));
+    // Resized: from here on the image is a canvas of the new size.
+    const img = width === src.width && height === src.height ? src
+      : (needCanvas(), { width, height, bitmap: scaled(await bitmapOf(src), width, height) });
+    if (out.id === 'ico') return await writeIco(await bitmapOf(img));
     if (out.ours) {
-      if (!src.pixels) needCanvas();
-      return WRITERS[out.id](rowsOf(src), width, height, rgb(background));
+      if (!img.pixels) needCanvas();
+      return WRITERS[out.id](rowsOf(img), width, height, rgb(background));
     }
-    const bitmap = await bitmapOf(src);
+    const bitmap = await bitmapOf(img);
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', out.alpha ? {} : { alpha: false });
     if (!ctx) throw new Error(`can't make a ${width} × ${height} canvas (out of memory?)`);
@@ -281,6 +304,24 @@ export async function sniffImage(blob, b) {
     if (str(foot, 0, 18) === 'TRUEVISION-XFILE.\0') return 'tga';
   }
   return null;
+}
+
+// What <img> shows without help (AVIF and ICO in most browsers; if not, the preview says it couldn't).
+const SHOWN = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon' };
+// An SVG document: optional BOM, XML declaration, comments and doctype, then <svg.
+const SVG = /^\uFEFF?\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s>]/i;
+
+/**
+ * Whether the viewer can show these first bytes of `name` as an image:
+ * { format, label, mime (to give the blob: URL), convert (true: to PNG first,
+ * for TGA / QOI / PNM) }, or null.
+ */
+export async function previewType(b, name = '') {
+  if (SVG.test(new TextDecoder().decode(b.subarray(0, 4096)))) return { format: 'svg', label: 'SVG', mime: 'image/svg+xml', convert: false };
+  // Only the start is here, so a TGA goes by its name (sniffImage would look for the footer at the end of these bytes).
+  const format = await sniffImage(new File([b], name), b);
+  if (!format) return null;
+  return { format, label: format === 'pnm' ? pnmHeader(b).label : LABELS[format], mime: SHOWN[format] || 'image/png', convert: !SHOWN[format] };
 }
 
 /**
@@ -512,11 +553,19 @@ const PARSERS = {
 
 /**
  * What converting to OUTPUTS[type] keeps and loses, as short phrases for the
- * user: transparency filled, frames, metadata, depth, lossy encoding.
+ * user: resize, transparency filled, frames, metadata, depth, lossy encoding.
+ * `options`: the op's { quality (1-100), width, height }.
  */
-export function imageNotes(info, type) {
+export function imageNotes(info, type, { quality = QUALITY * 100, width, height } = {}) {
   const out = output(type);
   const notes = [];
+  if (width || height) {
+    if (info.width == null) notes.push('resized');
+    else {
+      const [w, h] = resizedSize(info.width, info.height, { width, height });
+      notes.push(w === info.width && h === info.height ? 'already that size' : `resized to ${w} × ${h}`);
+    }
+  }
   if (info.alpha && !out.alpha) notes.push('any transparency becomes white');
   if (out.id === 'ico') {
     notes.push(info.width != null ? `${icoSizes(info.width, info.height).join(', ')} px icons` : 'icons up to 256 px');
@@ -529,7 +578,7 @@ export function imageNotes(info, type) {
   const meta = info.meta.filter((m) => m !== 'ICC profile');
   if (meta.length) notes.push(`${meta.join(', ')} dropped`);
   if (info.meta.includes('ICC profile')) notes.push('ICC colour profile dropped (colours converted to sRGB)');
-  if (out.id !== 'ico') notes.push(out.lossy ? `lossy, quality ${Math.round(QUALITY * 100)}` : 'lossless');
+  if (out.id !== 'ico') notes.push(out.lossy ? `lossy, quality ${quality}` : 'lossless');
   return notes;
 }
 

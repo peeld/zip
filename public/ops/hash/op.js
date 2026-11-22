@@ -2,6 +2,8 @@
 // checked against a pasted hash or a dropped checksum list (SHA256SUMS, *.md5, *.sfv, …).
 // The files are the list on the left of the page (the shell sends it with setFiles);
 // [ Clear ] forgets the computed hashes, so [ Hash ] runs again.
+// The algorithm boxes are the registry option `algos` (`hash md5 sha1`), and
+// the Expected box is `check` (`hash --check <hex>`).
 import { el, button, row, fmtBytes, table, task, isAbort } from '../../core/ui.js';
 import { prepareSave } from '../../core/files.js';
 import { countBytes } from '../../core/streams.js';
@@ -9,15 +11,16 @@ import { ALGOS, algo, hashStream, formatSums, parseSums, sumsFileAlgo, parseExpe
 
 const MAX_LIST = 16 * 1024 * 1024; // a checksum list bigger than this is hashed, not read
 
-export function mount(root) {
+export function mount(root, { options = {}, openOptions } = {}) {
   const files = new Map(); // path -> { file, sums: { id: hex } }
   let list = null;         // { name, byName: Map(name -> [{ algo, hex }]) }
   let stopper = null;      // AbortController while hashing
   const t = task();
   const summary = el('span');
   const listInfo = el('span', { className: 'muted' });
-  const boxes = new Map(ALGOS.map((a) => [a.id, el('input', { type: 'checkbox', checked: a.id === 'sha256' })]));
-  const expectInput = el('input', { spellcheck: false, size: 40, placeholder: 'paste a hash to check' });
+  const want = options.algos || ['sha256'];
+  const boxes = new Map(ALGOS.map((a) => [a.id, el('input', { type: 'checkbox', checked: want.includes(a.id) })]));
+  const expectInput = el('input', { spellcheck: false, size: 40, placeholder: 'paste a hash to check', value: options.check || '' });
   const go = button('Hash', run, { primary: true, disabled: true });
   const stop = button('Stop', () => stopper?.abort(), { disabled: true });
   const save = button('Save list…', saveList, { disabled: true });
@@ -26,14 +29,16 @@ export function mount(root) {
   const rows = table([{ label: 'File' }, { label: 'Size', num: true }, { label: 'Check' }]);
 
   for (const box of boxes.values()) box.onchange = render;
-  expectInput.oninput = () => {
+  // A pasted hash ticks a box its length fits, if none is ticked yet.
+  const expected = () => {
     const want = parseExpected(expectInput.value);
     if (want && !want.algos.some(selected)) boxes.get(want.algos[0]).checked = true;
-    render();
   };
+  expectInput.oninput = () => { expected(); render(); };
+  expected();
 
   root.append(
-    row(...ALGOS.map((a) => el('label', {}, boxes.get(a.id), a.label))),
+    row(...ALGOS.map((a) => el('label', {}, boxes.get(a.id), a.label)), ...(openOptions ? [button('options', () => openOptions(), { link: true })] : [])),
     row(el('label', {}, 'Expected ', expectInput), listInfo),
     row(summary, go, stop, save, copy, clear),
     t.el,
@@ -41,7 +46,16 @@ export function mount(root) {
   );
   render();
 
-  return { addFiles, setFiles };
+  return {
+    addFiles,
+    setFiles,
+    getOptions: () => ({ algos: chosen(), check: expectInput.value.trim() }),
+    setOptions({ algos, check }) {
+      if (algos) for (const [id, box] of boxes) box.checked = algos.includes(id);
+      if (check != null) { expectInput.value = check; expected(); }
+      render();
+    },
+  };
 
   /** Replace the files (the whole list on the left). Hashes already done for the same file are kept. */
   async function setFiles(all) {

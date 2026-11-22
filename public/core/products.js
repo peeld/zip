@@ -39,7 +39,7 @@ export function products() {
     viewing = p;
     try {
       const bytes = new Uint8Array(await p.blob.slice(0, VIEW_BYTES).arrayBuffer());
-      if (viewing === p) view.show(p.name, bytes, p.blob.size);
+      if (viewing === p) await view.show(p.name, bytes, p.blob.size, { blob: p.blob });
     } catch (e) {
       if (viewing === p) view.error(p.name, e.message);
     }

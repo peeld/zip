@@ -16,7 +16,8 @@ public/
     ui.js                         el, button, row, table, task (text progress/status), textBar, fmtBytes, isAbort
     files.js                      chooseFiles, filesFromDrop, acceptsFiles, pickOp, prepareSave, download,
                                   pickDirectory, writeToDirectory, makeDirs, safePath
-    viewer.js                     viewer (text/hex panel), decodeText, hexDump
+    viewer.js                     viewer (text / hex / image panel), decodeText, hexDump
+    options.js                    registry options: tokenize, parseArgs, formatArgs, optionHelp, completeArg, optionsForm (the popup)
     streams.js                    countBytes, readStart, streamToBlob
     transform.js                  transformOp: the whole UI for a one-file-in, one-file-out op
     archive.js                    archiveOp: the whole UI for opening an archive (list/view/save/extract all)
@@ -115,10 +116,12 @@ Rules:
    read the header when the file arrives, return `{ text, size }` to show,
    and throw to reject the file. See `ops/gunzip/op.js`.
 
-   **An option before arguments exist?** `transformOp({ choice: { label,
-   options: [[value, text], …] } })` adds a select; its value reaches
+   **A select in the panel?** `transformOp({ choice: { label,
+   options: [[value, text], …], option } })` adds one; its value reaches
    `transform`, `outName` and `inspect` as `choice`, and inspect can set it
-   when a file arrives. See `ops/decode/op.js`.
+   when a file arrives. `option` names the registry option it is, so the
+   prompt sets it. See `ops/decode/op.js`. Other registry options reach
+   `transform` as `options` (`ops/hex/op.js`).
 
    **Opening an archive?** `core/archive.js` `archiveOp({ noun, open })` is
    the whole unzip/untar UI (list, view, save one, extract all). `open(file)`
@@ -132,7 +135,8 @@ Rules:
    zip/tar/ar UI (name box, an optional checkbox, create, the "made" list). It
    packs every file in the list on the left: an op whose API has
    `setFiles(files)` is sent the whole list by the shell whenever it changes,
-   instead of `addFiles`. See `ops/tar/op.js`.
+   instead of `addFiles`. The name box is the registry option `name` and the
+   checkbox the bool option `option.name` (`tar backup --no-gzip`). See `ops/tar/op.js`.
 
    **Results go on the right.** An op that makes files lists them with
    `core/products.js` (`made.add(name, blob, { mime })`) rather than saving
@@ -170,6 +174,13 @@ Rules:
   empty element. Build the UI inside it. If the op has `input`, return
   `{ addFiles(files) }`. It can be called many times (the user drops more
   files) and must be ready as soon as `mount` returns.
+- Settings (a format, a quality, a size) go in the registry as `options`,
+  not as hand-made controls: the shell then parses them as flags, shows
+  them in the options popup and lists them in `help`. The op gets
+  `mount(root, { options, openOptions })` and should return
+  `setOptions(values)` and `getOptions()`; `transformOp` does all of this
+  (map its select to an option with `choice.option`). See
+  [command-line.md](command-line.md), "Options".
 - Don't add a drop zone or "choose file" button inside the op: the page's
   drop zone at the top does that.
 - The panel is detached, not destroyed, when the user runs another command,

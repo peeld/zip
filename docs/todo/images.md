@@ -93,9 +93,10 @@ only takes images while it's running. The original plan:
 
 ## Later phases
 
-1. **Resize** (`-w` / `-h` / a percentage): the same pipeline through
-   `scaled()` in `lib/image.js` (shrinks by halves; the ICO writer uses it).
-   Needs arguments. Probably the most wanted follow-up.
+1. ~~**Resize**~~: done, as `convert -w` / `-h` (pixels or %, both = fit
+   inside), with `-q` for JPEG / WebP quality
+   ([../done/2026-11-21-command-options.md](../done/2026-11-21-command-options.md)).
+   Left: crop, and a choice of background for transparency in JPEG / BMP / PPM.
 2. ~~**Our own writers in pure JS**: ICO, QOI, PPM / PGM, TGA, and readers.~~
    Done: `lib/imagefmt.js`. Left: PGM / PAM output (grey, 16-bit), RLE TGA
    output, ICO with BMP entries for Windows XP, .cur hotspots.
@@ -108,8 +109,9 @@ only takes images while it's running. The original plan:
 5. **AVIF / JPEG XL / HEIC:** would need WebAssembly codecs of ~1 MB+ each
    (Tier 3 in [new-ops.md](new-ops.md)). Skip unless asked. HEIC also has
    patent / licence questions.
-6. **Image preview in the viewer** (TODO.md): the same decode, shown as an
-   `<img>` from a `blob:` URL.
+6. ~~**Image preview in the viewer**~~: done
+   ([../done/2026-11-20-image-preview.md](../done/2026-11-20-image-preview.md)).
+   SVG preview works through `<img>` already, which phase 3 (SVG to PNG) can build on.
 
 ## Open questions
 
@@ -117,4 +119,4 @@ only takes images while it's running. The original plan:
   once the registry has aliases.
 - Several files at once (a folder of HEIC → JPEG is a common wish)?
   `transformOp` is one file in, one out; a batch would want a zip of the outputs.
-- Transparency in JPEG / BMP: white for now; a choice once there are arguments.
+- Transparency in JPEG / BMP: white for now; a `--background` option now that there are options.

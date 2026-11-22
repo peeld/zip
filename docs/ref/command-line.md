@@ -18,7 +18,7 @@ or chosen is listed inside the drop zone for the rest of the visit, even
 after other commands run (`uploaded` in `app.js`; a file dropped twice is
 listed once). Each row has:
 - `[view]`: the first 64 KB in the text/hex viewer (`core/viewer.js`, loaded on
-  first use) under the drop zone.
+  first use) under the drop zone; an image opens as the image (Image mode).
 - `[use]`: hand the file to the running op (same routing as a drop). This is
   how a one-file op (gzip, base64, …) picks its input.
 - `[x]`: remove it from the list. `[clear]` removes them all.
@@ -37,16 +37,68 @@ The list only holds `File` references. Nothing is copied or stored, and it's
 gone on reload.
 
 ## Commands
-- `public/ops/registry.js` lists the ops: `{ id, group, title, description, input }`.
+- `public/ops/registry.js` lists the ops: `{ id, group, title, description, input, options }`.
   The `id` is the command name. `GROUPS` gives the `help` heading order;
   within a group, ops are listed in registry order.
 - Built-ins in `public/app.js`: `help` (aliases `?`, `ls`), `help <cmd>`
-  (title, description, accepted files, `#<id>` link), `help <group>`, and
+  (title, description, accepted files, options, `#<id>` link), `help <group>`, and
   `clear` (alias `cls`). Unknown commands print `command not found`.
 - Tab completion (candidates on a hint line under the prompt) and up/down
   history.
-- Anything typed after the command name is ignored for now, except by `help`.
-  Ops have no arguments yet.
+- The line is split into words by `tokenize` (`core/options.js`): quotes keep
+  spaces, a backslash escapes. Words after the command are its options (below).
+
+## Options
+An op's settings are declared in the registry (`options`, schema in
+`core/options.js`), so the shell can parse, show and complete them without
+loading the op. The ops with options:
+
+| op | options |
+|---|---|
+| `convert` | `[to]`, `-q <1-100>`, `-w` / `-h <px\|%>` |
+| `encode` / `decode` | `[format]` |
+| `zip` | `[name]`, `--compress` / `-0` (store) |
+| `tar`, `cpio` | `[name]`, `-z` / `--no-gzip` |
+| `ar` | `[name]` |
+| `base64` | `-w <cols>` (0: one line) |
+| `hex` | xxd's `-c <cols>`, `-g <bytes>`, `-u`, `-p`, `-s <offset>`, `-l <len>`, `-o <offset>` |
+| `hash` | `[algos] …` (`hash md5 sha1`, or `-a md5,sha1`), `--check <hex>` (the Expected box) |
+| `gzip` | `-n` (no name or time in the header) / `-N` |
+| `uuencode` | `[name]`: the name on the `begin` line |
+
+Types (`core/options.js`): choice, set (several of a list: bare words add
+up, or a comma list after the flag; the popup shows checkboxes), int
+(decimal or `0x` hex; min / max optional, so `hex -s -10`; with no default
+it stays blank and the op picks: `hex -c`), size, bool
+(`shortOff: '0'` makes `-0` mean `--no-compress`; `short` and `shortOff`
+together give gzip's `-N` / `-n`), text. `what` names the value in help
+(`--seek <offset>`).
+
+- **Typed:** `convert webp -q 80 -w 50%`. One bare word for the positional
+  option (case-insensitive, labels and aliases too: `jpg`), `-q 80`, `-q80`,
+  `--quality 80`, `--quality=80`, `--flag` / `--no-flag`, bundled bool flags
+  (`hex -up` = `-u -p`). An unknown option or
+  a bad value prints an error and runs nothing; an op without options takes
+  no words (`brotli x`), and `gzip -9` is an unknown option.
+- **The popup:** typing a command with options and a space opens a box of
+  its fields under the prompt (`#opts`), set to the op's current values plus
+  what's typed. Typing flags sets the fields, and changing a field rewrites
+  the prompt line, so the flags are always in view. The line lists every
+  option that differs from its default, and any changed back to a default.
+  Errors show in the box as you type. Enter (at the prompt or in a field)
+  runs the line; Tab at the prompt completes a flag or value, or, with
+  nothing to complete, moves into the popup; Escape closes it.
+- **Sticky:** options set this visit stay with the op (`settings` in
+  `app.js`) until changed: `convert -q 70`, then `convert`, still has
+  quality 70. Words only change what they name. Not kept across reloads.
+- **The op:** `mount(root, { options, openOptions })` gets the values and a
+  function that opens the popup (transformOp shows it as `[options]`);
+  `api.setOptions(values)` passes on what a later line typed while the op is
+  loaded; `api.getOptions()` reports the op's own values (its select
+  included), which the popup starts from. A transformOp maps its select to
+  one option with `choice.option`.
+- `help <cmd>` lists the options (`optionHelp`); Tab completes `--flags` and
+  choice values (`completeArg`).
 
 ## Ops on screen
 - An op's code loads the first time its command runs. The bare page loads no

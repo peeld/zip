@@ -26,7 +26,7 @@ async function inspect(file, { choice, arrived }) {
 
 export const mount = transformOp({
   verb: 'Decode',
-  choice: { label: 'Format', options: ENCODINGS.map((e) => [e.id, e.label]) },
+  choice: { option: 'format', label: 'Format', options: ENCODINGS.map((e) => [e.id, e.label]) },
   inspect,
   outName: (file, info, id) => decodedTextName(file.name, id, info.type),
   transform: ({ stream, choice }) => encoding(choice).decode(stream()),

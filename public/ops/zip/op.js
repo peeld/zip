@@ -4,7 +4,7 @@ import { createZip } from '../../lib/zip.js';
 
 export const mount = packOp({
   verb: 'Create zip',
-  option: { label: 'Compress', checked: true },
+  option: { name: 'compress', label: 'Compress', checked: true },
   fixName: (name) => {
     name = name.trim() || 'archive.zip';
     return /\.zip$/i.test(name) ? name : `${name}.zip`;
