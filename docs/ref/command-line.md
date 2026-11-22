@@ -161,7 +161,7 @@ one image (by content: png, jpg, gif, webp, bmp, avif, qoi; by name otherwise,
 Routing by content: when exactly one file is dropped, the shell runs
 `lib/magic.js` `sniffFile` on it (magic.js is imported on the first drop, not
 with the page) and passes the type to `pickOp`. An op whose `input.sniff`
-lists types (`unzip`: zip; `untar`: tar, tar.gz, tar.xz, tar.zst, tar.bz2; `unar`: a, deb; `uncpio`: cpio, cpio.gz, cpio.xz, cpio.zst, cpio.bz2, rpm; `un7z`: 7z;
+lists types (`unzip`: zip; `untar`: tar, tar.gz, tar.xz, tar.zst, tar.bz2; `unar`: a, deb; `uncpio`: cpio, cpio.gz, cpio.xz, cpio.zst, cpio.bz2, rpm; `un7z`: 7z; `uniso`: iso;
 `gunzip`: gz, tar.gz, cpio.gz; `unxz`: xz, tar.xz, cpio.xz, lzma; `unzstd`: zst, tar.zst, cpio.zst; `bunzip2`: bz2, tar.bz2, cpio.bz2; `uudecode`: uu; `unhex`: hex) goes by
 the content when it's recognised, and by the name (`accept`) only when it
 isn't. So `backup.dat` holding a tar.gz opens in untar, a `.tar.gz` that's

@@ -19,6 +19,7 @@ import { unxz, xzInfo, crc64, unxzName, isXz, lzmaInfo } from '../public/lib/xz.
 import { isLzmaAlone } from '../public/lib/lzma.js';
 import { unzstd, zstdInfo, unzstdName, isZstd, xxh64 } from '../public/lib/zstd.js';
 import { read7z, open7zEntry, sevenZipWalk, is7z } from '../public/lib/7z.js';
+import { readIso, openIsoEntry, isIso } from '../public/lib/iso.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
@@ -541,6 +542,54 @@ async function run() {
     check(hand.entries.find((e) => e.name === 'empty.txt')?.size === 0 && !hand.entries.find((e) => e.name === 'empty.txt').dir
       && hand.folders.length === 3 && hand.solid, 'read7z: an empty file, three folders, one of them solid');
     check(is7z(new Uint8Array(await (await fx2('hand.7z')).slice(0, 6).arrayBuffer())) && await sniffFile(await fx2('hand.7z')) === '7z', 'is7z, sniffFile');
+  }
+
+  // 6n. ISO 9660 (lib/iso.js): genisoimage (Rock Ridge, Joliet, plain, El Torito + UDF), mkzftree (zisofs), and by hand.
+  {
+    const read = async (s) => bytes(await streamToBlob(s));
+    const err = async (fn) => { try { await fn(); } catch (e) { return e.message; } return ''; };
+    if (!manifest.isos.some((x) => x.file === 'rr.iso')) skip('iso: no genisoimage / mkisofs, only the hand-built image');
+    if (!manifest.isos.some((x) => x.file === 'zisofs.iso')) skip('iso: no mkzftree, zisofs not tested');
+    for (const x of manifest.isos) {
+      const blob = await fx2(x.file);
+      let a;
+      try { a = await readIso(blob); } catch (e) { check(false, `readIso: ${x.file}: ${e.message}`); continue; }
+      const byName = new Map(a.entries.map((e) => [e.name, e]));
+      const missing = [...Object.keys(x.files).filter((n) => !byName.get(n) || byName.get(n).dir),
+        ...x.dirs.filter((n) => !byName.get(n)?.dir),
+        ...Object.entries(x.links).filter(([n, to]) => byName.get(n)?.link !== to).map(([n]) => `link ${n}`),
+        ...Object.entries(x.specials).filter(([n, k]) => byName.get(n)?.special !== k).map(([n]) => `special ${n}`),
+        ...x.absent.filter((n) => byName.has(n)).map((n) => `not ${n}`)];
+      check(!missing.length && a.names === x.names && a.boot === x.boot && a.udf === x.udf && (!x.volume || a.volume === x.volume),
+        `readIso: ${x.file}: ${a.entries.length} entries, ${a.names}${a.boot ? ', boot' : ''}${a.udf ? ', udf' : ''} (${missing.slice(0, 4).join(', ')})`);
+      let ok = 0;
+      for (const [n, f] of Object.entries(x.files)) {
+        const e = byName.get(n);
+        if (e && e.size === (await fx2(f)).size && same(await read(openIsoEntry(blob, e)), await bytes(await fx2(f)))) ok++;
+        else if (e) check(false, `uniso: ${x.file}: ${n} differs`);
+      }
+      const n = Object.keys(x.files).length;
+      check(ok === n && (!x.zisofs || x.zisofs.every((z) => byName.get(z)?.zisofs)) && (!x.zisofs || !byName.get('random.bin').zisofs),
+        `uniso: ${x.file}: ${ok}/${n} files read back${x.zisofs ? ' (zisofs inflated)' : ''}`);
+    }
+    const hand = await readIso(await fx2('hand.iso'));
+    const big = hand.entries.find((e) => e.name === 'BIG.BIN');
+    check(big?.extents.length === 3 && big.size === 10340 && hand.entries.filter((e) => e.name === 'BIG.BIN').length === 1
+      && hand.entries.some((e) => e.name === 'LOOP/BACK' && e.dir) && !hand.entries.some((e) => e.name.startsWith('LOOP/BACK/')),
+      `readIso: a file in three extents is one entry; a folder loop is walked once (${hand.entries.map((e) => e.name).join(' ')})`);
+    check(hand.volume === 'HAND' && big.mtime?.toISOString() === '2024-05-06T07:08:09.000Z', `readIso: volume name, record date (${big?.mtime?.toISOString()})`);
+    const full = await fx2('hand.iso');
+    const inter = await err(async () => read(openIsoEntry(full, hand.entries.find((e) => e.name === 'INTER.BIN'))));
+    const noRoot = await err(async () => readIso(full.slice(0, 18 * 2048))); // the descriptors, not the root folder
+    const notIso = await err(async () => readIso(await fx2('src/random.bin')));
+    check(inter === 'INTER.BIN has no data to read' && noRoot === 'the ISO is cut off' && notIso === 'not an ISO 9660 image',
+      `readIso: an interleaved file isn't read; cut off; not an ISO (${inter} | ${noRoot} | ${notIso})`);
+    const lastFile = hand.entries.filter((e) => !e.dir && !e.special).sort((p, q) => q.extents.at(-1)[0] - p.extents.at(-1)[0])[0];
+    const pastEnd = await err(async () => read(openIsoEntry(full.slice(0, lastFile.extents.at(-1)[0] + 10), lastFile)));
+    check(pastEnd === `the ISO is cut off: ${lastFile.name} runs past its end`, `openIsoEntry: data past the end of a cut-off image (${pastEnd})`);
+    const types = [];
+    for (const f of manifest.isos.map((x) => x.file)) types.push(await sniffFile(await fx2(f)));
+    check(types.every((t) => t === 'iso') && await isIso(full) && !(await isIso(await fx2('src/random.bin'))), `sniffFile: iso (${types.join()})`);
   }
 
   // 6c. base64 / unbase64, checked byte for byte against Python's output.
@@ -1532,6 +1581,17 @@ async function run() {
         for (let i = 0; i < 50 && !root.textContent.includes('zstd-compressed'); i++) await sleep(100);
         check(root.querySelectorAll('tbody tr').length >= manifest.sources.length && root.textContent.includes('zstd-compressed'),
           'untar op: lists a .tar.zst');
+      }
+      if (op.id === 'uniso') {
+        const name = manifest.isos.some((x) => x.file === 'boot-udf.iso') ? 'boot-udf.iso' : 'hand.iso';
+        const file = new File([await fx2(name)], name);
+        await api.addFiles([{ path: file.name, file }]);
+        for (let i = 0; i < 50 && !root.querySelector('tbody tr'); i++) await sleep(100);
+        const text = root.textContent;
+        check(root.querySelectorAll('tbody tr').length >= 2 && (name === 'hand.iso'
+          ? text.includes('volume "HAND"') && text.includes('interleaved (not read)')
+          : text.includes('Rock Ridge names') && text.includes('bootable') && text.includes('also has UDF')),
+          `uniso op: lists an ISO and says what it is (${text.slice(0, 200)})`);
       }
       if (op.id === 'un7z') {
         const file = new File([await fx2('hand.7z')], 'hand.7z');

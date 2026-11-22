@@ -8,7 +8,7 @@ URL), `brotli` / `unbrotli` (native), `unxz` (.xz, .lzma; also .tar.xz /
 and a .deb's `data.tar.zst`), `bunzip2` (.bz2; also .tar.bz2 / .cpio.bz2),
 `un7z` (.7z: LZMA, LZMA2, Deflate, BZip2, Copy, zstd, with BCJ x86 /
 Delta). unzip also reads bzip2 / LZMA / zstd / xz entries, and uncpio reads
-a whole initramfs and .rpm packages. Tier 1 is done except zlib (low demand). Tier 2 left: lz4, uniso,
+a whole initramfs and .rpm packages. Tier 1 is done except zlib (low demand). `uniso` (.iso: ISO 9660, Joliet, Rock Ridge, zisofs) is done. Tier 2 left: lz4,
 zip encryption, unrar (stored only). How the built ones behave, and the decisions they settled:
 [../ref/formats.md](../ref/formats.md).
 
@@ -33,6 +33,13 @@ and add their content type to the registry `sniff` list (see
 [../ref/command-line.md](../ref/command-line.md), routing).
 
 ## Follow-ups on built ops
+
+- [ ] uniso: UDF (DVD / Blu-ray images, Windows install ISOs are UDF with a
+  stub ISO 9660 tree). A UDF reader is medium-large (partitions, file
+  entries, allocation descriptors, metadata partition in 2.50+).
+- [ ] uniso: list the El Torito boot image as `[BOOT]/…` like 7-Zip.
+- [ ] uniso: multi-session images (a later session's descriptors replace
+  the first's); HFS on Mac hybrids.
 
 - [ ] gzip / gunzip: check Chrome and Safari by hand (only Firefox is tested).
 - [ ] base64: base64url output, a `data:` URL output (`-w` is done).
@@ -121,7 +128,6 @@ Only zlib is left (or fold it into gzip).
 | Command | Format | Work | Notes |
 |---|---|---|---|
 | `lz4` / `unlz4` | .lz4 frame | small–med | Both directions are simple. Low demand. |
-| `uniso` | .iso (ISO 9660 + Joliet) | med | Random access via `Blob.slice`, like zip. No UDF at first. |
 | zip: encryption | ZipCrypto, WinZip AES | med | Fits in the existing `unzip`. AES-CTR, PBKDF2 and HMAC-SHA1 are all in `crypto.subtle`. Needs a password prompt in the UI. |
 | `unrar` (stored only) | .rar v4/v5, store method | small–med | Parse headers to **list** any RAR and extract *stored* (uncompressed) entries. A useful stepping stone, but most real RARs are compressed. |
 

@@ -128,11 +128,12 @@ def make_fixtures(work: Path) -> dict:
     zstds = make_zstd_fixtures(work, src, text, png)
     bzip2s = make_bzip2_fixtures(work, src, text, png)
     sevenzips = make_7z_fixtures(work, src)
+    isos = make_iso_fixtures(work, src)
     images = make_image_fixtures(work)
     (work / "manifest.json").write_text(json.dumps({"zips": zips, "tars": tars, "ars": ars, "cpios": cpios, "sources": names,
                                                     "long": LONG, "hashes": hashes, "brotli": has_brotli, "xzs": xzs,
                                                     "zstds": zstds, "bzip2s": bzip2s, "sevenzips": sevenzips,
-                                                    "images": images}))
+                                                    "images": images, "isos": isos}))
     return {"zips": zips}
 
 
@@ -977,6 +978,118 @@ def make_7z_fixtures(work: Path, src: Path) -> list:
         sz("cli-aes.7z", "-psecret", problem="this 7z is encrypted")
         subprocess.run([tool, "a", "-t7z", "-bd", "-y", "-psecret", "-mhe=on", str(work / "cli-aes-names.7z"), "."],
                        cwd=src, check=True, capture_output=True)
+    return out
+
+
+def hand_iso(files: list, loop=False) -> bytes:
+    """A small ISO 9660 image built by hand, for what genisoimage won't write: files in several extents
+    (flag 0x80), an extended attribute record before the data, an interleaved file, a folder loop.
+    files: [(name, [extent bytes, ...], {"xar": blocks, "interleaved": bool})]."""
+    B = 2048
+    b16 = lambda n: struct.pack("<H", n) + struct.pack(">H", n)
+    b32 = lambda n: struct.pack("<I", n) + struct.pack(">I", n)
+
+    def rec(name: bytes, extent: int, size: int, flags: int, xar=0, unit=0, gap=0) -> bytes:
+        pad = b"" if len(name) % 2 else b"\0"
+        return (bytes([33 + len(name) + len(pad), xar]) + b32(extent) + b32(size) + bytes([124, 5, 6, 7, 8, 9, 0])
+                + bytes([flags, unit, gap]) + b16(1) + bytes([len(name)]) + name + pad)
+
+    root, sub = 18, 19
+    nxt = 20 if loop else 19
+    records, data = [], {}
+    for name, extents, opt in files:
+        xar = opt.get("xar", 0)
+        for i, chunk in enumerate(extents):
+            last = i == len(extents) - 1
+            n = -(-len(chunk) // B) + xar
+            unit, gap = (1, 1) if opt.get("interleaved") else (0, 0)
+            records.append(rec(name.encode() + b";1", nxt, len(chunk), 0 if last else 0x80, xar, unit, gap))
+            data[nxt + xar] = chunk
+            nxt += max(n, 1)
+    def dirblock(me, parent, recs):
+        out = rec(b"\0", me, B, 2) + rec(b"\1", parent, B, 2) + b"".join(recs)
+        assert len(out) <= B
+        return out.ljust(B, b"\0")
+    extra = [rec(b"LOOP", sub, B, 2)] if loop else []
+    img = bytearray(nxt * B)
+    pvd = bytearray(B)
+    pvd[0:7] = b"\x01CD001\x01"
+    pvd[40:72] = b"HAND".ljust(32)
+    pvd[80:88] = b32(nxt)
+    pvd[120:124] = b16(1)
+    pvd[124:128] = b16(1)
+    pvd[128:132] = b16(B)
+    pvd[156:190] = rec(b"\0", root, B, 2)
+    pvd[881] = 1
+    img[16 * B:17 * B] = pvd
+    img[17 * B:17 * B + 7] = b"\xffCD001\x01"
+    img[root * B:(root + 1) * B] = dirblock(root, root, records + extra)
+    if loop:
+        img[sub * B:(sub + 1) * B] = dirblock(sub, root, [rec(b"BACK", root, B, 2)])  # a folder that is the root again
+    for at, chunk in data.items():
+        img[at * B:at * B + len(chunk)] = chunk
+    return bytes(img)
+
+
+def make_iso_fixtures(work: Path, src: Path) -> list:
+    """ISO images: genisoimage (Rock Ridge + Joliet, Joliet only, plain, bootable with UDF), mkzftree (zisofs),
+    and hand-built ones. Each: { file, names, files: { name: fixture }, links, specials, dirs, boot, udf, absent }."""
+    out = []
+    r = random.Random(11)
+    big = [r.randbytes(4096), r.randbytes(6144), r.randbytes(100)]
+    (work / "multi.bin").write_bytes(b"".join(big))
+    (work / "xar.txt").write_bytes(b"after an extended attribute record\n")
+    (work / "hand.iso").write_bytes(hand_iso([("BIG.BIN", big, {}), ("XAR.TXT", [(work / "xar.txt").read_bytes()], {"xar": 1}),
+                                             ("INTER.BIN", [b"interleaved"], {"interleaved": True})], loop=True))
+    out.append({"file": "hand.iso", "names": "iso9660", "files": {"BIG.BIN": "multi.bin", "XAR.TXT": "xar.txt"}, "links": {},
+                "specials": {"INTER.BIN": "interleaved (not read)"}, "dirs": ["LOOP"], "boot": False, "udf": False, "absent": []})
+    tool = shutil.which("genisoimage") or shutil.which("mkisofs")
+    if not tool:
+        return out
+    tree = work / "isosrc"
+    shutil.copytree(src, tree)
+    deep = "a/b/c/d/e/f/g/h/i/j"
+    (tree / deep).mkdir(parents=True)
+    (tree / deep / "deep.txt").write_bytes(b"deep\n")
+    long = "L" * 150 + ".txt"
+    (tree / long).write_bytes(b"long\n")
+    (tree / "link-to-hello").symlink_to("hello.txt")
+    (tree / "dir/sub/up").symlink_to("../../hello.txt")
+    os.mkfifo(tree / "fifo")
+    (work / "long.txt").write_bytes(b"long\n")
+    (work / "deep.txt").write_bytes(b"deep\n")
+    files = {n: f"src/{n}" for n in SOURCES}
+    mk = lambda name, *args, cwd=tree: subprocess.run([tool, "-quiet", "-input-charset", "utf-8", *args, "-o", str(work / name), "."],
+                                                       cwd=cwd, check=True, capture_output=True)
+    mk("rr.iso", "-R", "-J", "-joliet-long", "-V", "ZIPMEDIA")
+    out.append({"file": "rr.iso", "names": "rockridge", "files": {**files, long: "long.txt", f"{deep}/deep.txt": "deep.txt"},
+                "links": {"link-to-hello": "hello.txt", "dir/sub/up": "../../hello.txt"}, "specials": {"fifo": "fifo"},
+                "dirs": ["dir", "dir/sub", deep], "boot": False, "udf": False, "absent": ["rr_moved"], "volume": "ZIPMEDIA"})
+    mk("joliet.iso", "-J")  # no Rock Ridge: folders deeper than 8 levels are left out, names cut to 64 characters
+    out.append({"file": "joliet.iso", "names": "joliet", "files": files, "links": {}, "specials": {}, "dirs": ["dir", "dir/sub"],
+                "boot": False, "udf": False, "absent": [deep, "link-to-hello"]})
+    mk("plain.iso")
+    up = {"HELLO.TXT": "src/hello.txt", "EMPTY.TXT": "src/empty.txt", "RANDOM.BIN": "src/random.bin", "PHOTO.JPG": "src/photo.jpg",
+          "DIR/SUB/NESTED.CSV": "src/dir/sub/nested.csv", "SPLIT.TXT": "src/split.txt"}
+    out.append({"file": "plain.iso", "names": "iso9660", "files": up, "links": {}, "specials": {}, "dirs": ["DIR", "DIR/SUB"],
+                "boot": False, "udf": False, "absent": ["hello.txt"]})
+    (tree / "boot.img").write_bytes(r.randbytes(4096))
+    mk("boot-udf.iso", "-R", "-J", "-udf", "-b", "boot.img", "-no-emul-boot")
+    out.append({"file": "boot-udf.iso", "names": "rockridge", "files": {"hello.txt": "src/hello.txt"}, "links": {}, "specials": {},
+                "dirs": [], "boot": True, "udf": True, "absent": []})
+    if shutil.which("mkzftree"):
+        z = work / "zsrc"
+        z.mkdir()
+        (z / "text.txt").write_bytes(b"hello zisofs\n" * 20000)
+        (z / "zeros.bin").write_bytes(bytes(70000))
+        shutil.copy(src / "random.bin", z / "random.bin")  # doesn't compress: stored as is
+        for n in ("text.txt", "zeros.bin"):
+            shutil.copy(z / n, work / f"z-{n}")
+        subprocess.run(["mkzftree", str(z), str(work / "zz")], check=True)
+        mk("zisofs.iso", "-R", "-z", cwd=work / "zz")
+        out.append({"file": "zisofs.iso", "names": "rockridge", "files": {"text.txt": "z-text.txt", "zeros.bin": "z-zeros.bin",
+                    "random.bin": "src/random.bin"}, "links": {}, "specials": {}, "dirs": [], "boot": False, "udf": False,
+                    "absent": [], "zisofs": ["text.txt", "zeros.bin"]})
     return out
 
 

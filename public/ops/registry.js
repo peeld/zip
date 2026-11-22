@@ -56,6 +56,8 @@ export const OPS = [
     input: { accept: '.cpio,.cpio.gz,.cpgz,.cpio.xz,.cpio.zst,.cpio.bz2,.rpm,application/x-cpio,application/x-rpm', sniff: ['cpio', 'cpio.gz', 'cpio.xz', 'cpio.zst', 'cpio.bz2', 'rpm'] } },
   { id: 'un7z', group: 'archive', title: 'Open a 7z archive', description: 'View the files in a .7z archive and extract them.',
     input: { accept: '.7z,application/x-7z-compressed', sniff: ['7z'] } },
+  { id: 'uniso', group: 'archive', title: 'Open an ISO image', description: 'View the files in a CD / DVD image (.iso: ISO 9660, Joliet, Rock Ridge) and extract them.',
+    input: { accept: '.iso,application/x-iso9660-image', sniff: ['iso'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
     input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
   { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.', aliases: { unlzma: '' },

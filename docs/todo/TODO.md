@@ -18,7 +18,7 @@
 
 ## New ops
 - [ ] Image follow-ups: SVG to PNG, GIF writing, TIFF reading, crop, a background colour. `convert` (the browser's codecs, our own ICO / TGA / QOI / PNM, resize and quality) is done. See [images.md](images.md).
-- [ ] More archive / compression / encoding commands (Tier 2 left: lz4, iso, zip encryption, … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/zstd/bzip2/7z/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
+- [ ] More archive / compression / encoding commands (Tier 2 left: lz4, zip encryption, … up to rar), in tiers by difficulty, plus follow-ups on gzip/brotli/xz/zstd/bzip2/7z/base64/tar/ar/cpio/uu/hex/hash/encode. See [new-ops.md](new-ops.md).
 
 ## Later
 - [ ] Command line follow-ups: more options, `help` completion, per-op aliases, saved history. See [commands.md](commands.md).

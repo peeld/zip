@@ -50,7 +50,7 @@ public/
   vendor/<name>/                  third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/
     registry.js                   GROUPS (help headings) and OPS (id = command name, group, title, description, input)
-    unzip/ untar/ unar/ uncpio/ un7z/ zip/ tar/ ar/ cpio/ gunzip/ gzip/ unxz/ unzstd/ bunzip2/ unbrotli/ brotli/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/ convert/   one op.js each
+    unzip/ untar/ unar/ uncpio/ un7z/ uniso/ zip/ tar/ ar/ cpio/ gunzip/ gzip/ unxz/ unzstd/ bunzip2/ unbrotli/ brotli/ unbase64/ base64/ uudecode/ uuencode/ unhex/ hex/ decode/ encode/ hash/ convert/   one op.js each
 ```
 
 Rules:

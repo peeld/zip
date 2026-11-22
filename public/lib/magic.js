@@ -76,13 +76,14 @@ export function extForMime(mime) {
 }
 
 const HEAD = 512;
+const ISO_ID = 16 * 2048 + 1;
 const UU = /^begin(-base64)? [0-7]{3,4} [^\r\n]/; // a uuencoded file's first line
 // A hex dump's first line: xxd (`00000000: 4865 …`) or hexdump -C / the viewer (`00000000  48 65 …`).
 const HEX = /^[0-9a-fA-F]{8}(: [0-9a-fA-F]{2}|  [0-9a-fA-F]{2} )/;
 
 /**
  * Content type of a file for routing: sniffType's ext ('zip', 'gz', 'png', …),
- * 'uu' for text that starts with a uuencode `begin` line, 'hex' for an
+ * 'iso' for an ISO 9660 image (read at byte 32769), 'uu' for text that starts with a uuencode `begin` line, 'hex' for an
  * xxd or hexdump -C dump,
  * 'tar.gz' / 'cpio.gz' (likewise .xz, .zst, .bz2) for a compressed file whose content
  * starts with a tar / cpio header, or null.
@@ -92,6 +93,11 @@ export async function sniffFile(file) {
   const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
   const t = sniffType(head);
   if (!t) {
+    // ISO 9660: "CD001" in the first volume descriptor, at sector 16 (the
+    // start is a zeroed system area, or a boot sector on a hybrid image).
+    // Before the .lzma check, which a block of zeros could pass.
+    const vd = new Uint8Array(await file.slice(ISO_ID, ISO_ID + 5).arrayBuffer());
+    if (String.fromCharCode(...vd) === 'CD001') return 'iso';
     // Legacy .lzma has no magic number. Cheap pre-check (a small props byte, a
     // dictionary size that's a multiple of 256, the range coder's leading zero),
     // then lib/lzma.js's stricter one.

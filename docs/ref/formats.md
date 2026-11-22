@@ -637,6 +637,44 @@ doesn't check the CRC.
   shown at 8rem, pixelated; transparency gets a checkerboard. Each show bumps
   a counter, so a slow load never lands on a later file.
 
+## ISO 9660 (`lib/iso.js`)
+- Our own reader (ECMA-119, Joliet, SUSP / RRIP 1.12). Volume descriptors
+  from sector 16: the primary, a Joliet supplementary one (escape `%/@`,
+  `%/C`, `%/E`), El Torito's boot record, and UDF's recognition sequence
+  (`NSR02` / `NSR03`) are noted. Random access with `Blob.slice`: listing
+  reads only the directories (each read whole; over 64 MB is corrupt).
+- **Names**, best first: Rock Ridge (an `SP` entry in the root's `.`
+  record) for POSIX names, modes, symlinks (`SL`), mtimes (`TF`, short or
+  long form), devices / FIFOs (listed, not extracted), `CE` continuation
+  areas, and `CL` / `RE`: folders deeper than 8 levels, which genisoimage
+  moves to `rr_moved`, are listed where they belong, and an empty `rr_moved`
+  is dropped (as Linux and 7-Zip show it). Then Joliet (UCS-2, cut to 64 or
+  103 characters by the writer). Then plain ISO 9660: upper case, `;1` and a
+  trailing `.` dropped. 7-Zip prefers Joliet, so it shows a long Rock Ridge
+  name cut short where we don't; `isoinfo -f` lists `rr_moved` as it is.
+- **Records:** padding to the next block (a 0 length byte); multi-extent
+  files (flag 0x80, how files over 4 GB are stored) join into one entry;
+  data starts after an extended attribute record (`xar` blocks); associated
+  files (Mac resource forks) are skipped; a folder seen twice (a loop) is
+  walked once. Interleaved files are listed as `interleaved (not read)`.
+- **zisofs** (Rock Ridge `ZF`, algorithm `pz`, from `mkisofs -z` on a
+  `mkzftree` tree): the size is the real one, and reading inflates each
+  block (zlib, native `DecompressionStream('deflate')`); an empty block is
+  zeros.
+- Not read: UDF (a UDF-only image shows its ISO 9660 stub, usually a
+  README; the status line says UDF is there), the El Torito boot image
+  (7-Zip shows it as `[BOOT]`), HFS on Mac hybrids, path tables (the
+  directory tree has the same data), multi-session images (the first
+  session's descriptors are read).
+- Routing: `sniffFile` reads 5 bytes at 32769 for `CD001` when the first
+  512 bytes match nothing (checked before .lzma, which a block of zeros
+  could pass).
+- Tests: genisoimage (Rock Ridge + Joliet with symlinks, a FIFO, a 150-byte
+  name and a folder 10 deep; Joliet only; plain; El Torito + UDF),
+  mkzftree (zisofs), and `hand_iso` in `run_tests.py` (a file in three
+  extents, an extended attribute record, an interleaved file, a folder
+  loop); cut-off images. CI installs genisoimage and zisofs-tools.
+
 ## File types (`lib/magic.js`)
 `sniffType(bytes)` -> `{ ext, mime }` from magic numbers (png, jpg, gif,
 webp, bmp (`BM` and a known DIB header size), avif (`ftypavif` / `ftypavis`, before mp4), pdf, zip, gz, bz2 (`BZh` and a digit), xz, 7z, rar, zst, tar, rpm, deb, a (ar), cpio, wasm, mp3,
@@ -644,7 +682,8 @@ ogg, flac, wav, mp4); give it 262+ bytes for tar. `extForMime(mime)` maps a mime
 extension. `sniffFile(file)` is the routing type: sniffType's ext,
 `tar.gz` / `cpio.gz` (or `.xz`, `.zst`, `.bz2`) for a gzip (or xz, zstd, bzip2) whose first decompressed
 bytes are a tar / cpio header, `lzma` for a legacy .lzma header (see xz above), `uu`
-for text starting with a uuencode `begin` line, or `hex` for an xxd /
+for text starting with a uuencode `begin` line, `iso` for an ISO 9660
+image (`CD001` at byte 32769), or `hex` for an xxd /
 hexdump -C dump. Used by
 unbase64 for naming and by the shell for routing.
 

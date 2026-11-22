@@ -1,6 +1,6 @@
 # ZipMedia
 
-File tools that run in the browser (currently: zip, unzip, tar, untar, ar, unar, cpio, uncpio, un7z, gzip, gunzip, unxz, unzstd, bunzip2, brotli, unbrotli, base64, unbase64, uuencode, uudecode, hex, unhex, encode, decode, hash, convert). Files are never uploaded: all the
+File tools that run in the browser (currently: zip, unzip, tar, untar, ar, unar, cpio, uncpio, un7z, uniso, gzip, gunzip, unxz, unzstd, bunzip2, brotli, unbrotli, base64, unbase64, uuencode, uudecode, hex, unhex, encode, decode, hash, convert). Files are never uploaded: all the
 work happens in the user's tab. The site is plain static files with no build
 step. Third-party code is allowed only when it's light and earns its place,
 and it's vendored under `public/vendor/` (see
@@ -10,7 +10,7 @@ and it's vendored under `public/vendor/` (see
 
 The page is a terminal-style prompt (`>`) under one drop zone. Type `help` to
 list commands, then a command such as `unzip` or `zip`. Or just drop files:
-a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2 in `untar`, a .a / .deb in `unar`, a .cpio / .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 or an .rpm in `uncpio`, a .7z in `un7z`, a .gz in
+a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2 in `untar`, a .a / .deb in `unar`, a .cpio / .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 or an .rpm in `uncpio`, a .7z in `un7z`, an .iso in `uniso`, a .gz in
 `gunzip`, a .xz / .lzma in `unxz`, a .zst in `unzstd`, a .bz2 in `bunzip2`, a .br in `unbrotli`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, a .b32 / .a85 / .qp / .urlenc in `decode`, anything else goes to `zip`. To check a download, run `hash` and drop the file
 together with its `SHA256SUMS` (or paste the expected hash). To convert an
 image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM in;
@@ -36,7 +36,7 @@ public/              deploy this folder as the web root
   style.css
   .htaccess          security headers for Apache
   core/              shared UI, file I/O and stream helpers (ui, files, viewer, streams, transform, archive, pack, options, store)
-  lib/               shared processing libraries (zip.js, tar.js, ar.js, cpio.js, source.js, decompress.js, gzip.js, xz.js, lzma.js, zstd.js, bzip2.js, 7z.js, filters.js, brotli.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js, image.js, imagefmt.js)
+  lib/               shared processing libraries (zip.js, tar.js, ar.js, cpio.js, source.js, decompress.js, gzip.js, xz.js, lzma.js, zstd.js, bzip2.js, 7z.js, iso.js, filters.js, brotli.js, base64.js, uu.js, hex.js, hash.js, crc32.js, magic.js, image.js, imagefmt.js)
   vendor/<name>/     third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/registry.js    list of ops (id = command name), in help order
   ops/<id>/op.js     one folder per operation
@@ -82,7 +82,7 @@ decoders' workers start from `blob:` URLs, which inherit it (see
 python3 test/run_tests.py
 ```
 
-Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, binutils `ar`, `dpkg-deb` and coreutils `sha256sum` / `md5sum` for fixtures and extra checks; the ar and .deb checks are skipped without them). `xz` adds a few xz fixtures; `zstd` and `bzip2` make the zstd and bzip2 fixtures (those tests are skipped without them); libarchive (`libarchive13`, used through ctypes) and the 7-Zip command line (`7zz`, or p7zip's `7z`) make the 7z fixtures; Pillow (`pip install pillow`) makes the image fixtures and checks the converted images (skipped without it); the Python `brotli` module (`pip install brotli`) is needed for the brotli tests, which are also skipped (SKIP lines) when the browser has no native brotli. Snap Firefox works too.
+Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, binutils `ar`, `dpkg-deb` and coreutils `sha256sum` / `md5sum` for fixtures and extra checks; the ar and .deb checks are skipped without them). `xz` adds a few xz fixtures; `zstd` and `bzip2` make the zstd and bzip2 fixtures (those tests are skipped without them); libarchive (`libarchive13`, used through ctypes) and the 7-Zip command line (`7zz`, or p7zip's `7z`) make the 7z fixtures; `genisoimage` (or `mkisofs`) and `mkzftree` (zisofs-tools) make the ISO fixtures (a hand-built image is always tested); Pillow (`pip install pillow`) makes the image fixtures and checks the converted images (skipped without it); the Python `brotli` module (`pip install brotli`) is needed for the brotli tests, which are also skipped (SKIP lines) when the browser has no native brotli. Snap Firefox works too.
 
 ## Deploy
 
@@ -120,6 +120,13 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
 - Written tars (pax, ustar or GNU: `tar -H`) have been checked with GNU tar,
   Python's tarfile and 7-Zip. Files over 8 GB use a pax size header (GNU:
   base-256) but haven't been tested with a real file.
+
+## Limits of lib/iso.js
+
+- Reads ISO 9660 with Rock Ridge or Joliet names, files over 4 GB (several
+  extents) and zisofs. UDF isn't read: a DVD image that's UDF only shows
+  just its ISO 9660 stub (the status line says UDF is there). The boot
+  image of a bootable CD isn't listed.
 
 ## Limits of lib/ar.js
 
