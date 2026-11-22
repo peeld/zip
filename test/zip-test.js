@@ -2173,6 +2173,7 @@ async function shellTests() {
     for (let i = 0; i < 30 && !d.querySelector('#op-convert select'); i++) await sleep(100);
     const sel = d.querySelector('#op-convert select');
     check(popup.hidden && sel?.value === 'webp' && cmd.value === '', 'shell: enter runs convert with the options; the popup closes');
+    check(w.location.hash === '#convert?to=webp&quality=70', `shell: the link has the settings, not the resize (${w.location.hash})`);
     type('convert ');
     check(field('quality').value === '70' && field('width').value === '50%' && field('to').value === 'webp',
       'shell: the options stick for the next time');
@@ -2182,7 +2183,8 @@ async function shellTests() {
     check(field('quality').value === '40' && field('width').value === '50%', 'shell: running again changes only what was typed');
     key('Escape');
     sel.value = 'bmp';
-    sel.dispatchEvent(new w.Event('change'));
+    sel.dispatchEvent(new w.Event('change', { bubbles: true }));
+    check(w.location.hash === '#convert?to=bmp&quality=40', `shell: a change in the panel updates the link (${w.location.hash})`);
     [...d.querySelectorAll('#op-convert button')].find((b) => b.textContent === 'options').click();
     check(!popup.hidden && field('to').value === 'bmp' && cmd.value === 'convert bmp -q 40 -w 50% ' && d.activeElement === field('to'),
       `shell: the panel's [options] opens the popup with its settings (${cmd.value})`);
@@ -2278,6 +2280,42 @@ async function shellTests() {
       'shell: reset forgets settings and history');
   } finally {
     g.remove();
+    clearAll();
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  clearAll();
+
+  // Opened from a link with options, then links followed in the page.
+  const k = document.createElement('iframe');
+  const loaded3 = new Promise((r) => { k.onload = r; });
+  k.src = '/public/index.html#tar?format=gnu&z=0&name=my%20files';
+  document.body.append(k);
+  await loaded3;
+  try {
+    const w = k.contentWindow, d = k.contentDocument;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (let i = 0; i < 50 && !d.querySelector('#op-tar input'); i++) await sleep(100);
+    const out = () => d.getElementById('out').textContent;
+    check(out().startsWith('> tar "my files" --no-gzip -H gnu') && d.querySelector('#op-tar input')?.value === 'my files.tar'
+      && w.location.hash === '#tar?gzip=0&format=gnu',
+      `shell: a link runs as the line it means; the URL keeps only what's remembered (${out().slice(0, 40)} | ${w.location.hash})`);
+    w.location.hash = '#hex?s=-64&u';
+    for (let i = 0; i < 30 && !d.querySelector('#op-hex'); i++) await sleep(100);
+    await sleep(200);
+    check(out().startsWith('> hex --upper -s -64') && w.location.hash === '#hex?upper=1', `shell: a followed link with short flags (${out().slice(0, 30)} | ${w.location.hash})`);
+    w.location.hash = '#convert?q=500';
+    await sleep(300);
+    check(out().startsWith('> convert -q500') && out().includes('quality must be a whole number from 1 to 100'), `shell: a bad link shows the error (${out().slice(0, 60)})`);
+    const before = out();
+    w.location.hash = '#nosuch?x=1';
+    await sleep(300);
+    check(out() === before, 'shell: a link to no command is ignored');
+    d.getElementById('cmd').value = 'help zip';
+    d.getElementById('prompt').requestSubmit();
+    await sleep(200);
+    check(out().includes('link:  #zip') && w.location.hash === '', `shell: help lists the link; no op running, no hash (${w.location.hash})`);
+  } finally {
+    k.remove();
     clearAll();
   }
 }

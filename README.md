@@ -22,7 +22,9 @@ the command history are kept in the browser for the next visit (`reset`
 forgets them). A single file
 is matched by its content first (a gzipped tar called `backup.dat` still
 opens in `untar`), its name second. `help <command>` says what a command takes. `#unzip` in the
-URL runs that command on load.
+URL runs that command on load, with options if they follow
+(`#convert?to=webp&q=80`); the address keeps up with the settings, so it can
+be copied to share them.
 
 ## Layout
 

@@ -119,8 +119,20 @@ together give gzip's `-N` / `-n`), text. `what` names the value in help
 - Running an op shows its panel with the registry `description` as a
   `# comment` line above it. A panel is detached, not destroyed, when another
   command runs, so its state (chosen files, results) survives.
-- `#<id>` in the URL runs that op on load. Running an op updates the hash
-  with `replaceState`. **Keep `#<id>` URLs stable** so bookmarks keep working.
+- `#<id>` in the URL runs that op on load, and options can follow:
+  `#convert?to=webp&q=80`. Keys are option names or short flags; a key with
+  no value is a bool flag (`#hex?u`), `0` / `1` set a bool. `linkLine`
+  (`app.js`) turns the hash into the line it means (`convert webp -q 80`)
+  and runs it like a typed one: the line is echoed, saved in the history,
+  and a bad key or value shows the error. Following such a link in the tab
+  (`hashchange`) does the same. A link to an unknown command is ignored,
+  and only ops can be linked (not `reset`).
+- The hash follows the running op and its settings (`linkFor`, with
+  `replaceState`, after a run and after a change in its panel), so the
+  address can be copied to share them. It holds only options the shell
+  remembers: no archive names, offsets or hashes, though a link may give
+  those (`#hash?check=<sha256>` from a download page). `help <cmd>` shows the
+  link. **Keep `#<id>` URLs and option names stable** so links keep working.
 
 ## Routing dropped files
 `pickOp` in `core/files.js`: the running op gets the files if its `input`

@@ -17,7 +17,7 @@
 import { OPS, GROUPS } from './ops/registry.js';
 import { chooseFiles, filesFromDrop, pickOp } from './core/files.js';
 import { fmtBytes } from './core/ui.js';
-import { tokenize, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from './core/options.js';
+import { tokenize, quote, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from './core/options.js';
 import { loadSettings, saveSettings, loadHistory, saveHistory, clearAll } from './core/store.js';
 
 const out = document.getElementById('out');
@@ -59,8 +59,50 @@ function screen(cmd, ...nodes) {
 function setCurrent(id) {
   current = id;
   document.title = id ? `${id} · zipmedia` : 'zipmedia';
-  const url = id ? `#${id}` : location.pathname + location.search;
-  if (location.hash.slice(1) !== (id || '')) history.replaceState(null, '', url);
+  updateLink();
+}
+
+// ---------------------------------------------------------------- links
+// The URL names the running op and its settings: #convert?to=webp&quality=80
+// (only options the shell would remember, so no names or hashes). Opening such
+// a link runs it as the line `convert webp -q 80`, shown like a typed one;
+// a link may give any option, by name or short flag (#hash?check=…, #hex?s=-64).
+
+/** Option values as link text: bools 1 / 0, sets comma-separated. */
+const linkValue = (v) => (v === true ? '1' : v === false ? '0' : Array.isArray(v) ? v.join(',') : String(v));
+const enc = (s) => encodeURIComponent(s).replace(/%2C/gi, ',');
+
+/** The hash for an op as it's set now. */
+function linkFor(op) {
+  const now = optionValues(op), dflt = defaults(op);
+  const q = (op.options || []).filter((o) => o.remember !== false && now[o.name] !== undefined && !sameValue(now[o.name], dflt[o.name]))
+    .map((o) => `${o.name}=${enc(linkValue(now[o.name]))}`);
+  return `#${op.id}${q.length ? `?${q.join('&')}` : ''}`;
+}
+
+/** Point the URL at the running op (replaceState: no history entry, no hashchange). */
+function updateLink() {
+  const op = OPS.find((o) => o.id === current);
+  const want = op ? linkFor(op) : '';
+  if (location.hash !== want) history.replaceState(null, '', want || location.pathname + location.search);
+}
+
+/** The command line a hash stands for (`#tar?format=gnu&z=0` -> 'tar -H gnu --no-gzip'), or null. */
+function linkLine(hash) {
+  const text = hash.replace(/^#/, '');
+  const cut = text.indexOf('?');
+  const id = decodeURIComponent(cut < 0 ? text : text.slice(0, cut)).toLowerCase();
+  const op = OPS.find((o) => o.id === id);
+  if (!op) return null;
+  const words = [];
+  for (const [k, v] of new URLSearchParams(cut < 0 ? '' : text.slice(cut + 1))) {
+    const flag = k.length === 1 ? `-${k}` : `--${k}`;
+    words.push(v === '' ? flag : k.length === 1 ? `${flag}${v}` : `${flag}=${v}`);
+  }
+  const { values, errors } = parseArgs(op, words);
+  // A bad link runs as given, so the error shows what was wrong; a good one as the line it means.
+  const args = errors.length ? words.map(quote).join(' ') : formatArgs(op, values, {});
+  return `${op.id}${args ? ` ${args}` : ''}`;
 }
 
 const cmdLink = (id) => el('button', { type: 'button', className: 'cmd', textContent: id, onclick: () => run(id) });
@@ -115,7 +157,7 @@ function helpCmd(op) {
     ...(op.options ? [line('  options:'), ...optionHelp(op).map((l) => line(`    ${l}`))] : []),
     ...(op.options && formatArgs(op, optionValues(op)) ? [line(`  set:   ${op.id} ${formatArgs(op, optionValues(op))}`), line(`         ('reset ${op.id}' for the defaults)`, 'muted')] : []),
     line(`  group: ${GROUPS[op.group] || 'other'}`),
-    line(`  link:  #${op.id}`, 'muted'));
+    line(`  link:  ${linkFor(op)}`, 'muted'));
 }
 
 /** An op's option values now: what its panel says if it's loaded, else what was set this visit, else the defaults. */
@@ -131,7 +173,7 @@ function keptFlags(op) {
   return formatArgs(op, Object.fromEntries((op.options || []).filter((o) => o.remember !== false).map((o) => [o.name, now[o.name]])));
 }
 
-/** Save every op's settings (on each run, and when the page is hidden: panel changes count too). */
+/** Save every op's settings (on each run, a change in a panel, and when the page is hidden). */
 function persist() {
   saveSettings(Object.fromEntries(OPS.filter((o) => o.options).map((o) => [o.id, keptFlags(o)])));
 }
@@ -173,15 +215,15 @@ addEventListener('pagehide', persist);
 
 /** Show an op, loading its code on first use. `values`: options to set. Resolves to its API, or null if it failed to load. */
 async function runOp(op, cmd, values = {}) {
+  // Once the panel has the values: save them, and put them in the link.
+  const settled = () => { if (op.options) persist(); updateLink(); };
   setCurrent(op.id);
-  if (op.options) {
-    settings.set(op.id, { ...optionValues(op), ...values });
-    persist();
-  }
+  if (op.options) settings.set(op.id, { ...optionValues(op), ...values });
   const existing = loaded.get(op.id);
   if (existing && !existing.failed) {
     screen(cmd, existing.panel);
     if (Object.keys(values).length) existing.api?.setOptions?.(values);
+    settled();
     return existing.api;
   }
 
@@ -201,6 +243,7 @@ async function runOp(op, cmd, values = {}) {
     body.className = 'error';
     entry.failed = true;
   }
+  settled();
   return entry.api;
 }
 
@@ -495,10 +538,14 @@ addEventListener('drop', async (e) => {
   openFiles(await filesFromDrop(e.dataTransfer));
 });
 
+// A link typed or followed in this tab (the page's own updates don't fire hashchange).
 addEventListener('hashchange', () => {
-  const id = location.hash.slice(1);
-  if (id && id !== current && OPS.some((o) => o.id === id)) run(id);
+  const cmd = linkLine(location.hash);
+  if (cmd) run(cmd);
 });
 
-const start = location.hash.slice(1);
-if (start && OPS.some((o) => o.id === start)) run(start);
+// A change in an op's panel (its select, a box) is saved and changes the link.
+out.addEventListener('change', () => { persist(); updateLink(); });
+
+const start = linkLine(location.hash);
+if (start) run(start);

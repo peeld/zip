@@ -12,7 +12,8 @@ In rough priority order:
   ([../done/2026-11-21-remember-settings.md](../done/2026-11-21-remember-settings.md)).
   Left: a `history` command to list them; sync between open tabs (the
   `storage` event) if two tabs fighting over settings turns out to matter.
-- [ ] Options in `#<id>` links (`#convert?to=webp&q=80`)?
+- Done: options in `#<id>` links
+  ([../done/2026-11-21-option-links.md](../done/2026-11-21-option-links.md)).
 - [ ] Popup: keep a bad value in its field (now it shows the last good one,
   with the error under the fields).
 - [ ] Tab completion of `help <arg>` (command and group names).
