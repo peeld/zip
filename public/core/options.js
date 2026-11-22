@@ -9,7 +9,7 @@
 //     { name: 'width', short: 'w', type: 'size', help: 'resize: pixels or a percentage' },
 //   ]
 //
-//   const { values, errors } = parseArgs(op, tokenize('-q 80 webp'));  // values: only what was typed
+//   const { values, errors, bad } = parseArgs(op, tokenize('-q 80 webp'));  // values: only what was typed; bad: { name: raw } that failed
 //   formatArgs(op, { quality: 80, to: 'webp' })                         // 'webp -q 80'
 //
 // Types: choice (one of `values`), set (some of `values`: `md5,sha1`, or
@@ -120,18 +120,22 @@ function convert(o, raw) {
 /**
  * Parse the words after the command name: --name value, --name=value,
  * -x value, -xVALUE, --flag / --no-flag, bundled bool flags (-up), and one
- * bare word for the positional option (a set takes several). Returns { values (only what was given), errors }.
+ * bare word for the positional option (a set takes several). Returns { values (only what was given), errors,
+ * bad: { name: the text } for values that didn't convert, so the popup can show them as typed }.
  */
 export function parseArgs(op, words) {
   const opts = op.options || [];
   const values = {};
   const errors = [];
+  const bad = {};
   const positional = new Set(); // set options given as bare words so far
   const set = (o, raw) => {
     try {
       values[o.name] = convert(o, raw);
+      delete bad[o.name];
     } catch (msg) {
       errors.push(typeof msg === 'string' ? msg : msg.message);
+      bad[o.name] = String(raw);
     }
   };
   for (let i = 0; i < words.length; i++) {
@@ -172,7 +176,7 @@ export function parseArgs(op, words) {
     }
     set(o, raw);
   }
-  return { values, errors };
+  return { values, errors, bad };
 }
 
 /**
@@ -234,7 +238,10 @@ export function completeArg(op, words, last) {
 /**
  * The options popup: one control per option, set to `values`. Calls
  * onChange(values) with every option's current value when one changes.
- * Returns { el, set(values), focus(), fields } (fields: name -> control).
+ * Returns { el, set(values), mark(bad), focus(), fields } (fields: name -> control).
+ * set(values, bad) also puts each `bad` text ({ name: raw }, from parseArgs)
+ * in its field, so a wrong value stays where it was typed; mark(bad) flags
+ * those fields invalid and clears the rest.
  */
 export function optionsForm(op, values, onChange) {
   const fields = {};
@@ -242,7 +249,10 @@ export function optionsForm(op, values, onChange) {
     const f = fields[o.name];
     if (o.type === 'bool') return [o.name, f.checked];
     if (o.type === 'set') return [o.name, [...f.querySelectorAll('input:checked')].map((b) => b.value)];
-    if (o.type === 'int') return [o.name, f.value === '' ? o.default : Number(f.value)];
+    if (o.type === 'int') {
+      const v = f.value.trim();
+      return [o.name, v === '' ? o.default : /^-?\d+$/.test(v) ? Number(v) : v]; // other text (0x10, 'abc') goes to the prompt as typed
+    }
     return [o.name, f.value.trim()];
   }));
   const rows = (op.options || []).map((o) => {
@@ -271,20 +281,33 @@ export function optionsForm(op, values, onChange) {
       el('span', { className: 'opt-field' }, f),
       el('span', { className: 'opt-help muted', textContent: [o.help, flag].filter(Boolean).join('  ') }));
   });
-  const set = (v) => {
+  const typed = (o) => ['int', 'size', 'text'].includes(o.type); // fields that can hold any text
+  const mark = (bad = {}) => {
     for (const o of op.options || []) {
       const f = fields[o.name];
+      const wrong = o.name in bad;
+      f.classList.toggle('bad', wrong);
+      if (wrong) f.setAttribute('aria-invalid', 'true');
+      else f.removeAttribute('aria-invalid');
+    }
+  };
+  const set = (v, bad = {}) => {
+    for (const o of op.options || []) {
+      const f = fields[o.name];
+      if (o.name in bad && typed(o)) { f.value = bad[o.name]; continue; }
       if (!(o.name in v)) continue;
       if (o.type === 'bool') f.checked = !!v[o.name];
       else if (o.type === 'set') for (const b of f.querySelectorAll('input')) b.checked = (v[o.name] || []).includes(b.value);
       else f.value = v[o.name] ?? '';
     }
+    mark(bad);
   };
   set(values);
   const box = el('div', { className: 'opts' }, ...rows);
   return {
     el: box,
     set,
+    mark,
     focus: () => box.querySelector('input, select')?.focus(),
     fields,
   };

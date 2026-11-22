@@ -88,7 +88,11 @@ together give gzip's `-N` / `-n`), text. `what` names the value in help
   what's typed. Typing flags sets the fields, and changing a field rewrites
   the prompt line, so the flags are always in view. The line lists every
   option that differs from its default, and any changed back to a default.
-  Errors show in the box as you type. Enter (at the prompt or in a field)
+  Errors show in the box as you type, and a value that's wrong stays in its
+  field as typed, outlined and `aria-invalid` (`parseArgs` returns the raw
+  text of what failed as `bad`); a choice or checkbox can't hold a wrong
+  value, so only the error shows for those. Text in a number field goes
+  to the prompt as typed (`-q abc`, `-s 0x40`), not as a number. Enter (at the prompt or in a field)
   runs the line; Tab at the prompt completes a flag or value, or, with
   nothing to complete, moves into the popup; Escape closes it.
 - **Sticky:** options set stay with the op (`settings` in `app.js`) until

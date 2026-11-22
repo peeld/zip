@@ -58,6 +58,7 @@ b, strong, h2 { color: var(--hi); }
 .opt-set { display: flex; flex-wrap: wrap; gap: 0 1.5ch; }
 .opt-set label { white-space: nowrap; }
 .popup-errors:empty { display: none; }
+.opts .bad { outline: 1px solid var(--err); outline-offset: 1px; }
 .popup-errors { margin-bottom: .5rem; }
 @media (max-width: 480px) {
   .opts { grid-template-columns: max-content minmax(0, 1fr); }

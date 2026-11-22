@@ -1868,6 +1868,9 @@ async function optionsTests() {
     && parseArgs(zipOp, ['--compress']).values.compress === true && parseArgs(zipOp, ['--no-compress']).values.compress === false,
     `zip options: name, -0, --compress (${JSON.stringify(z)})`);
   check(parseArgs(zipOp, ['a', 'b']).errors[0] === "'b': name is already a", 'zip options: one name');
+  const pb = parseArgs(convert, tokenize('-q 500 -q 70 -w x'));
+  check(JSON.stringify(pb.bad) === '{"width":"x"}' && pb.values.quality === 70 && pb.errors.length === 2,
+    `parseArgs: bad holds what didn't convert, a later good value clears it (${JSON.stringify(pb.bad)})`);
   check(JSON.stringify(parseArgs(tarOp, ['-z', 'x']).values) === '{"gzip":true,"name":"x"}' && formatArgs(tarOp, { gzip: false }) === '--no-gzip',
     'tar options: -z / --no-gzip');
   check(parseArgs(tarOp, ['-H', 'ustar']).values.format === 'ustar' && parseArgs(tarOp, ['--format=posix']).values.format === 'pax'
@@ -2158,6 +2161,18 @@ async function shellTests() {
       'shell: typed flags set the fields');
     type('convert -q 500');
     check(popup.querySelector('.popup-errors').textContent.includes('quality must be a whole number from 1 to 100'), 'shell: the popup shows a bad value');
+    check(field('quality').value === '500' && field('quality').getAttribute('aria-invalid') === 'true' && !field('to').hasAttribute('aria-invalid'),
+      `shell: a bad typed value stays in its field, marked (${field('quality').value})`);
+    type('convert -q 50');
+    check(field('quality').value === '50' && !field('quality').hasAttribute('aria-invalid') && !popup.querySelector('.popup-errors').textContent,
+      'shell: fixing it clears the mark and the error');
+    field('quality').value = 'abc';
+    field('quality').dispatchEvent(new w.Event('input'));
+    check(cmd.value === 'convert -q abc ' && field('quality').getAttribute('aria-invalid') === 'true'
+      && popup.querySelector('.popup-errors').textContent.includes("(not 'abc')"), `shell: text in a number field goes to the prompt as typed (${cmd.value})`);
+    field('quality').value = '0x20';
+    field('quality').dispatchEvent(new w.Event('input'));
+    check(cmd.value === 'convert -q 0x20 ' && !field('quality').hasAttribute('aria-invalid'), `shell: 0x hex from the popup (${cmd.value})`);
     type('convert -');
     key('Tab');
     check(hint.textContent === '--quality  --width  --height', `shell: Tab lists the flags (${hint.textContent})`);

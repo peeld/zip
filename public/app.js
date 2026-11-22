@@ -418,11 +418,12 @@ function typedOp() {
 function syncPopup() {
   const op = typedOp();
   if (!op?.options) return hidePopup();
-  const { values, errors } = parseArgs(op, tokenize(input.value).slice(1));
+  const { values, errors, bad } = parseArgs(op, tokenize(input.value).slice(1));
   const shown = { ...optionValues(op), ...values };
   if (popupOp !== op) {
     popupOp = op;
     popupForm = optionsForm(op, shown, fromPopup);
+    popupForm.set(shown, bad);
     popup.setAttribute('aria-label', `${op.id} options`);
     popup.replaceChildren(
       el('div', { className: 'popup-head' }, el('strong', { textContent: op.id }), ' options',
@@ -431,7 +432,7 @@ function syncPopup() {
       el('div', { className: 'popup-errors error' }),
       el('div', { className: 'muted', textContent: 'enter runs · tab moves between fields · esc closes' }));
   } else {
-    popupForm.set(shown);
+    popupForm.set(shown, bad);
   }
   popup.querySelector('.popup-errors').replaceChildren(...errors.map((e) => line(e)));
   popup.hidden = false;
@@ -445,8 +446,9 @@ function fromPopup(vals) {
   const base = Object.fromEntries(Object.keys(vals).map((k) => [k, sameValue(vals[k], dflt[k]) && sameValue(vals[k], now[k]) ? vals[k] : Symbol('show')]));
   const args = formatArgs(op, vals, base);
   input.value = `${op.id} ${args}${args ? ' ' : ''}`;
-  const { errors } = parseArgs(op, tokenize(input.value).slice(1));
+  const { errors, bad } = parseArgs(op, tokenize(input.value).slice(1));
   popup.querySelector('.popup-errors').replaceChildren(...errors.map((e) => line(e)));
+  popupForm.mark(bad);
 }
 
 function closePopup() {
