@@ -8,7 +8,7 @@ import { base64Encode, base64Decode, parseDataUrl, unbase64Name } from '../publi
 import { sniffType, extForMime, sniffFile, decodedName } from '../public/lib/magic.js';
 import { uuEncode, readUu, openUuEntry } from '../public/lib/uu.js';
 import { hexEncode, hexDecode, hexFormat } from '../public/lib/hex.js';
-import { readTar, openTarEntry, tarWalk, createTar, paxRecord, tarName } from '../public/lib/tar.js';
+import { readTar, openTarEntry, tarWalk, createTar, paxRecord, tarName, TAR_FORMATS } from '../public/lib/tar.js';
 import { readAr, openArEntry, createAr, arNames, arName } from '../public/lib/ar.js';
 import { readCpio, openCpioEntry, cpioWalk, createCpio, cpioName, cpioFormat } from '../public/lib/cpio.js';
 import { readRpm, rpmLabel, isRpm } from '../public/lib/rpm.js';
@@ -856,12 +856,37 @@ async function run() {
       if (e && same(await read(openTarEntry(tar, e)), await bytes(it.file))) rt++;
     }
     check(rt === items.length && back.entries.filter((e) => e.dir).length === 4, `createTar: round trip ${rt}/${items.length}, 4 folders`);
-    // A size over 8 GB goes in a pax header. Only the start of the stream is read.
+    // --format gnu (././@LongLink) and ustar (no extra headers; the long name can't go in).
+    const gnuTar = await streamToBlob(createTar(items, { format: 'gnu' }));
+    await post('/upload/written.gnu.tar', gnuTar);
+    const plain = items.filter((it) => it.name !== manifest.long);
+    await post('/upload/written.ustar.tar', await streamToBlob(createTar(plain, { format: 'ustar' })));
+    const gback = await readTar(gnuTar);
+    let grt = 0;
+    for (const it of items) {
+      const e = gback.entries.find((x) => x.name === it.name);
+      if (e && same(await read(openTarEntry(gnuTar, e)), await bytes(it.file))) grt++;
+    }
+    check(grt === items.length && gback.entries.length === back.entries.length, `createTar gnu: round trip ${grt}/${items.length}`);
+    let ustarErr = '';
+    try { createTar(items, { format: 'ustar' }); } catch (e) { ustarErr = e.message; }
+    check(/^deep\/d+\/: name too long for ustar .*\(and 1 more\); use pax or gnu$/.test(ustarErr), `createTar ustar: refuses long names before writing (${ustarErr})`);
+    let fmtErr = '';
+    try { createTar(items, { format: 'v7' }); } catch (e) { fmtErr = e.message; }
+    check(fmtErr === "unknown tar format 'v7'", 'createTar: unknown format');
+    // A size over 8 GB goes in a pax header (gnu: base-256). Only the start of the stream is read.
     const huge = { size: 9e9, lastModified: 0, stream: () => new ReadableStream({ pull(c) { c.enqueue(new Uint8Array(65536)); } }) };
     const head = await readStart(createTar([{ name: 'big.bin', file: huge }]), 4096);
     let big = null;
     for await (const { entry } of tarWalk(new Blob([head.bytes]))) { big = entry; break; }
     check(big?.name === 'big.bin' && big.size === 9e9, `createTar: 9 GB size in a pax header (${big?.size})`);
+    const ghead = await readStart(createTar([{ name: 'big.bin', file: huge }], { format: 'gnu' }), 4096);
+    let gbig = null;
+    for await (const { entry } of tarWalk(new Blob([ghead.bytes]))) { gbig = entry; break; }
+    check(gbig?.size === 9e9 && ghead.bytes[124] === 0x80 && ghead.bytes[512] === 0, `createTar gnu: 9 GB size in base-256 (${gbig?.size})`);
+    let bigErr = '';
+    try { createTar([{ name: 'big.bin', file: huge }], { format: 'ustar' }); } catch (e) { bigErr = e.message; }
+    check(bigErr === 'big.bin: 8 GB or more, too big for ustar; use pax or gnu', `createTar ustar: refuses 8 GB (${bigErr})`);
     let paxOk = true;
     for (let i = 0; i < 300; i++) {
       const r = paxRecord('k', 'é'.repeat(i));
@@ -1844,6 +1869,10 @@ async function optionsTests() {
   check(parseArgs(zipOp, ['a', 'b']).errors[0] === "'b': name is already a", 'zip options: one name');
   check(JSON.stringify(parseArgs(tarOp, ['-z', 'x']).values) === '{"gzip":true,"name":"x"}' && formatArgs(tarOp, { gzip: false }) === '--no-gzip',
     'tar options: -z / --no-gzip');
+  check(parseArgs(tarOp, ['-H', 'ustar']).values.format === 'ustar' && parseArgs(tarOp, ['--format=posix']).values.format === 'pax'
+    && formatArgs(tarOp, { format: 'gnu' }) === '-H gnu' && parseArgs(tarOp, ['-H', 'v7']).errors[0] === 'format must be one of pax, ustar, gnu (not \'v7\')'
+    && tarOp.options.find((o) => o.name === 'format').values.map(([id]) => id).join() === TAR_FORMATS.join(),
+    'tar options: -H / --format, matching lib/tar.js TAR_FORMATS');
   const zh = optionHelp(zipOp);
   check(/^\[name\] +the archive's name/.test(zh[0]) && /^-0, --no-compress +deflate the files .*\(on by default\)$/.test(zh[1]),
     `optionHelp: a text positional and a -0 flag (${zh.join(' | ')})`);
@@ -1980,6 +2009,14 @@ async function optionsTests() {
     check(tn.value === 'backup.tar' && tapi.getOptions().gzip === false, `tar --no-gzip: the name follows (${tn.value})`);
     tapi.setOptions({ name: 'x.tar.gz', gzip: true });
     check(tn.value === 'x.tar.gz', 'tar: a name that already has the extension keeps it');
+    check(tapi.getOptions().format === undefined, 'tar: no format given, none reported (the shell adds the default)');
+    tapi.setOptions({ format: 'ustar', gzip: false });
+    tapi.setFiles(items);
+    press(t, 'Create tar');
+    await wait(() => tapi.products.items.length);
+    const ut = new Uint8Array(await tapi.products.items[0].blob.arrayBuffer());
+    check(tapi.getOptions().format === 'ustar' && String.fromCharCode(...ut.subarray(257, 265)) === 'ustar\x0000'
+      && t.textContent.includes('Created x.tar (10.0 KB, ustar format)'), `tar -H ustar: made, and said (${t.textContent.slice(0, 200)})`);
   }
   {
     const r = document.createElement('div');

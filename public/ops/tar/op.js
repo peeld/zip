@@ -1,4 +1,5 @@
 // Op: pack files and folders into a .tar, or a .tar.gz with the gzip box ticked.
+// --format (pax / ustar / gnu) is only on the command line and in the popup.
 import { packOp } from '../../core/pack.js';
 import { createTar, tarName } from '../../lib/tar.js';
 import { gzip } from '../../lib/gzip.js';
@@ -10,8 +11,9 @@ export const mount = packOp({
   save: (gz) => gz
     ? { description: 'Gzipped tar archive', mime: 'application/gzip', ext: '.gz' }
     : { description: 'Tar archive', mime: 'application/x-tar', ext: '.tar' },
-  make: (items, { option, onProgress }) => {
-    const tar = createTar(items, { onProgress });
+  note: ({ format }) => (format && format !== 'pax' ? `${format} format` : ''),
+  make: (items, { option, options, onProgress }) => {
+    const tar = createTar(items, { onProgress, format: options.format || 'pax' });
     return option ? gzip(tar, { mtime: Date.now() }) : tar;
   },
 });

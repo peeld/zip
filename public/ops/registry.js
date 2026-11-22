@@ -76,7 +76,10 @@ export const OPS = [
   // These take any files, but only while they're the running command: zip
   // comes first for drops.
   { id: 'tar', group: 'archive', title: 'Create a tar', description: 'Pack files and folders into a .tar or .tar.gz.',
-    input: { multiple: true, folders: true }, options: [archiveName, gzipOption(true, '.tar.gz')] },
+    input: { multiple: true, folders: true }, options: [archiveName, gzipOption(true, '.tar.gz'),
+      // lib/tar.js TAR_FORMATS; -H is GNU tar's and bsdtar's short flag.
+      { name: 'format', short: 'H', type: 'choice', values: [['pax', 'pax'], ['ustar', 'ustar'], ['gnu', 'GNU']], aliases: { posix: 'pax' }, default: 'pax',
+        help: 'pax: any name or size; ustar: no extensions (refuses long names, 8 GB files); gnu: GNU tar\'s own' }] },
   { id: 'ar', group: 'archive', title: 'Create an ar archive', description: 'Pack files into an ar archive (.a). ar has no folders: only file names are kept.',
     input: { multiple: true, folders: true }, options: [archiveName] },
   { id: 'cpio', group: 'archive', title: 'Create a cpio archive', description: 'Pack files and folders into a .cpio or .cpio.gz (newc format, as initramfs uses).',

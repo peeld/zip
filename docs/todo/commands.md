@@ -5,9 +5,9 @@ How the shell works now: [../ref/command-line.md](../ref/command-line.md).
 In rough priority order:
 
 - [ ] More options ([../done/2026-11-21-more-options.md](../done/2026-11-21-more-options.md),
-  [../done/2026-11-21-hex-range-check.md](../done/2026-11-21-hex-range-check.md)):
-  `tar --format` (ustar / pax), and `tar` / `cpio` compressors past gzip
-  once there are writers.
+  [../done/2026-11-21-hex-range-check.md](../done/2026-11-21-hex-range-check.md),
+  [../done/2026-11-21-tar-format.md](../done/2026-11-21-tar-format.md)):
+  `tar` / `cpio` compressors past gzip, once there are writers.
 - [ ] Remember option settings across visits (localStorage, try/catch), with history.
 - [ ] Options in `#<id>` links (`#convert?to=webp&q=80`)?
 - [ ] Popup: keep a bad value in its field (now it shows the last good one,

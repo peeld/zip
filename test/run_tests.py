@@ -373,9 +373,11 @@ def make_tar_fixtures(work: Path, src: Path) -> list:
 
 def verify_tar(work: Path, results: list):
     """Check the tars the browser wrote with Python's tarfile and GNU `tar -t`."""
-    want = dict(SOURCES)
-    want[LONG] = b"long\n"
-    for name in ("written.tar", "written.tar.gz"):
+    full = dict(SOURCES)
+    full[LONG] = b"long\n"
+    all_dirs = ["deep", "deep/" + "d" * 120, "dir", "dir/sub"]
+    for name, want, want_dirs in (("written.tar", full, all_dirs), ("written.tar.gz", full, all_dirs),
+                                  ("written.gnu.tar", full, all_dirs), ("written.ustar.tar", dict(SOURCES), ["dir", "dir/sub"])):
         def check(ok, msg):
             results.append(f"{'PASS' if ok else 'FAIL'} {name}: {msg}")
         p = work / name
@@ -389,12 +391,24 @@ def verify_tar(work: Path, results: list):
                 if n in files:
                     check(t.extractfile(files[n]).read() == data, f"content {n[:40]}")
             dirs = sorted(m.name for m in t.getmembers() if m.isdir())
-            check(dirs == ["deep", "deep/" + "d" * 120, "dir", "dir/sub"], f"folder entries {[d[:12] for d in dirs]}")
+            check(dirs == want_dirs, f"folder entries {[d[:12] for d in dirs]}")
             check(files["hello.txt"].mtime == TAR_MTIME and files["hello.txt"].mode == 0o644, "mtime and mode")
+        raw = p.read_bytes()
+        if name == "written.gnu.tar":
+            check(raw[257:265] == b"ustar  \0" and b"././@LongLink" in raw and b"@PaxHeader" not in raw, "GNU magic, ././@LongLink, no pax headers")
+        elif name == "written.ustar.tar":
+            check(raw[257:265] == b"ustar\x0000" and b"@PaxHeader" not in raw and b"@LongLink" not in raw
+                  and "unicodé 名前.txt".encode() in raw, "plain ustar: no extra headers, the UTF-8 name as is")
         check(p.stat().st_size % 10240 == 0 or name.endswith(".gz"), "padded to 10 KB records")
         if shutil.which("tar"):
             r = subprocess.run(["tar", "-tf", str(p)], capture_output=True, text=True)
-            check(r.returncode == 0 and LONG in r.stdout.splitlines(), f"tar -t {r.stderr.strip()}")
+            check(r.returncode == 0 and sorted(r.stdout.splitlines()) == sorted([*want, *(d + "/" for d in want_dirs)]),
+                  f"tar -t {r.stderr.strip()}")
+        seven = find_7z()
+        if seven and not name.endswith(".gz"):
+            r = subprocess.run([seven, "l", "-slt", str(p)], capture_output=True, text=True)
+            paths = [l[7:] for l in r.stdout.splitlines() if l.startswith("Path = ")][1:]  # the first is the archive
+            check(r.returncode == 0 and sorted(paths) == sorted([*want, *want_dirs]), f"7-Zip lists every name ({len(paths)})")
 
 
 def ar_member(field: str, data: bytes, mtime=TAR_MTIME) -> bytes:

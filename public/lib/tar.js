@@ -6,9 +6,11 @@
 // once, and opening an entry decompresses up to that entry again. tarWalk() does one pass over every
 // entry, for "extract all".
 //
-// Writing: createTar() streams ustar headers + file data. Names that don't fit
-// ustar (over 100/155+100 bytes, or not ASCII) and sizes of 8 GB or more get a
-// pax extended header, like GNU `tar --format=pax` and Python's tarfile.
+// Writing: createTar() streams ustar headers + file data. By default (pax),
+// names that don't fit ustar (over 100/155+100 bytes, or not ASCII) and sizes
+// of 8 GB or more get a pax extended header, like Python's tarfile. `ustar`
+// writes no extra headers and refuses what doesn't fit; `gnu` uses
+// ././@LongLink names and base-256 sizes, like GNU tar's default.
 import { compression, decompress } from './decompress.js';
 import { blobReader, streamReader, toStream } from './source.js';
 
@@ -211,6 +213,14 @@ export function paxRecord(key, value) {
 const octal = (n, width) => n.toString(8).padStart(width - 1, '0') + '\0';
 const MAX_OCTAL_SIZE = 8 ** 11 - 1; // 8 GB - 1: 11 octal digits
 
+/** GNU base-256 number: 0x80, then the value big-endian in the rest of the field. */
+function base256(n, width) {
+  const b = new Uint8Array(width);
+  for (let i = width - 1; i > 0; i--, n = Math.floor(n / 256)) b[i] = n % 256;
+  b[0] = 0x80;
+  return b;
+}
+
 /** Split a name into ustar prefix (≤155 bytes) + name (≤100 bytes) at a '/', or null. */
 function splitName(bytes) {
   if (bytes.length <= 100) return ['', bytes];
@@ -222,22 +232,29 @@ function splitName(bytes) {
   return null;
 }
 
-function header({ name, size, mtime, mode, flag }) {
+/**
+ * One 512-byte header. pax: only 7-bit ASCII names go in the name fields
+ * (others get a pax `path`); ustar: any UTF-8 name that fits, as GNU tar
+ * does; gnu: "ustar  \0", no prefix field, base-256 sizes past 8 GB.
+ * `fits` is false when the name (or size) needs an extra header.
+ */
+function header({ name, size, mtime, mode, flag }, format = 'pax') {
   const h = new Uint8Array(BLOCK);
   const put = (off, value) => h.set(typeof value === 'string' ? ascii(value) : value, off);
   const bytes = utf8.encode(name);
-  const ascii7 = /^[\x20-\x7e]*$/.test(name);
-  const split = ascii7 ? splitName(bytes) : null; // non-ASCII names always go in a pax header
-  const [prefix, short] = split || ['', ascii(asciiFallback(name).slice(-100))];
+  const gnu = format === 'gnu';
+  const split = gnu ? (bytes.length <= 100 ? ['', bytes] : null)
+    : format === 'ustar' || /^[\x20-\x7e]*$/.test(name) ? splitName(bytes) : null;
+  const [prefix, short] = split || ['', gnu ? bytes.subarray(0, 100) : ascii(asciiFallback(name).slice(-100))];
   put(0, short);
   put(100, octal(mode, 8));
   put(108, octal(0, 8));
   put(116, octal(0, 8));
-  put(124, octal(size > MAX_OCTAL_SIZE ? 0 : size, 12));
+  put(124, size <= MAX_OCTAL_SIZE ? octal(size, 12) : gnu ? base256(size, 12) : octal(0, 12));
   put(136, octal(Math.max(0, Math.min(MAX_OCTAL_SIZE, mtime)), 12));
   put(148, '        ');
   put(156, flag);
-  put(257, 'ustar\x0000');
+  put(257, gnu ? 'ustar  \0' : 'ustar\x0000');
   if (prefix.length) put(345, prefix);
   let sum = 0;
   for (const b of h) sum += b;
@@ -248,43 +265,77 @@ function header({ name, size, mtime, mode, flag }) {
 /** ASCII stand-in for the 100-byte name field when the real name is in a pax header. */
 const asciiFallback = (name) => name.replace(/[^\x20-\x7e]/g, '_');
 
-/** Header block(s) for one entry: a pax header first if the name or size doesn't fit ustar. */
-function entryHeaders(e) {
-  const { h, fits } = header(e);
+/** Why an entry can't be written as ustar, or ''. */
+function ustarProblem(e) {
+  if (!splitName(utf8.encode(e.name))) return `${e.name}: name too long for ustar (100 bytes, or 155 + 100 split at a /)`;
+  if (e.size > MAX_OCTAL_SIZE) return `${e.name}: 8 GB or more, too big for ustar`;
+  return '';
+}
+
+/** A data entry's blocks: its header, the data, padding. */
+const withData = (h, data) => [h, data, new Uint8Array(pad(data.length))];
+
+/**
+ * Header block(s) for one entry. pax: a pax header first if the name or size
+ * doesn't fit ustar. gnu: a ././@LongLink entry first for a name over 100
+ * bytes. ustar: just the header (createTar checks the entries fit first).
+ */
+function entryHeaders(e, format) {
+  const { h, fits } = header(e, format);
+  if (format === 'ustar' || fits && e.size <= MAX_OCTAL_SIZE) return [h];
+  if (format === 'gnu') {
+    if (fits) return [h]; // a big size is in base-256 already
+    const data = new Uint8Array([...utf8.encode(e.name), 0]);
+    return [...withData(header({ name: '././@LongLink', size: data.length, mtime: 0, mode: 0o644, flag: 'L' }, 'gnu').h, data), h];
+  }
   const recs = [];
   if (!fits) recs.push(paxRecord('path', e.name));
   if (e.size > MAX_OCTAL_SIZE) recs.push(paxRecord('size', String(e.size)));
-  if (!recs.length) return [h];
   const data = utf8.encode(recs.join(''));
-  const dir = e.name.includes('/') ? e.name.slice(0, e.name.lastIndexOf('/', e.name.length - 2) + 1) : '';
-  const base = asciiFallback(e.name.slice(dir.length)).replace(/\/$/, '');
-  const paxName = `${asciiFallback(dir)}PaxHeaders/${base}`.slice(-100);
-  const ph = header({ name: paxName, size: data.length, mtime: e.mtime, mode: 0o644, flag: 'x' }).h;
-  return [ph, data, new Uint8Array(pad(data.length)), h];
+  // Python's name for it. 7-Zip before 22 only applies an 'x' header with this
+  // name (GNU tar's PaxHeaders/<name> comes out as a file); other readers ignore it.
+  return [...withData(header({ name: '././@PaxHeader', size: data.length, mtime: e.mtime, mode: 0o644, flag: 'x' }).h, data), h];
 }
+
+/** The formats createTar writes, for the tar command's --format. */
+export const TAR_FORMATS = ['pax', 'ustar', 'gnu'];
 
 /**
  * Stream a tar of items ({ name, file } with `/`-separated names; a `file` is a
  * Blob/File, or anything with size, lastModified and stream()). Parent folders
  * get their own entries first, like `tar -cf`. onProgress(done, total) counts file bytes.
+ * format: 'pax' (ustar, plus pax headers where needed), 'ustar' (throws, before
+ * writing anything, if a name or size doesn't fit) or 'gnu' (GNU tar's own).
  */
-export function createTar(items, { onProgress } = {}) {
+export function createTar(items, { onProgress, format = 'pax' } = {}) {
+  if (!TAR_FORMATS.includes(format)) throw new Error(`unknown tar format '${format}'`);
   const total = items.reduce((n, it) => n + it.file.size, 0);
+  // Every entry first (folders before what's in them), so ustar can refuse before a byte is written.
+  const entries = [];
+  const dirs = new Set();
+  for (const { name, file } of items) {
+    const mtime = Math.floor((file.lastModified ?? Date.now()) / 1000);
+    const parts = name.split('/').filter(Boolean);
+    for (let i = 1; i < parts.length; i++) {
+      const d = `${parts.slice(0, i).join('/')}/`;
+      if (dirs.has(d)) continue;
+      dirs.add(d);
+      entries.push({ name: d, size: 0, mtime, mode: 0o755, flag: '5' });
+    }
+    entries.push({ name: parts.join('/'), size: file.size, mtime, mode: 0o644, flag: '0', file, label: name });
+  }
+  if (format === 'ustar') {
+    const bad = entries.map(ustarProblem).filter(Boolean);
+    if (bad.length) throw new Error(`${bad[0]}${bad.length > 1 ? ` (and ${bad.length - 1} more)` : ''}; use pax or gnu`);
+  }
   let done = 0;
   const gen = (async function* () {
-    const dirs = new Set();
     let written = 0;
     const emit = function* (...parts) { for (const p of parts) { written += p.length; yield p; } };
-    for (const { name, file } of items) {
-      const mtime = Math.floor((file.lastModified ?? Date.now()) / 1000);
-      const parts = name.split('/').filter(Boolean);
-      for (let i = 1; i < parts.length; i++) {
-        const d = `${parts.slice(0, i).join('/')}/`;
-        if (dirs.has(d)) continue;
-        dirs.add(d);
-        yield* emit(...entryHeaders({ name: d, size: 0, mtime, mode: 0o755, flag: '5' }));
-      }
-      yield* emit(...entryHeaders({ name: parts.join('/'), size: file.size, mtime, mode: 0o644, flag: '0' }));
+    for (const e of entries) {
+      yield* emit(...entryHeaders(e, format));
+      if (!e.file) continue;
+      const { file, label: name } = e;
       let n = 0;
       const reader = file.stream().getReader();
       try {

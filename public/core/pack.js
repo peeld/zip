@@ -9,7 +9,8 @@
 //     option: { name: 'compress', label: 'Compress', checked: true },   // optional: no checkbox without it
 //     fixName: (name, option) => …,       // the archive's file name, e.g. adds .zip
 //     save: (option) => ({ mime }),      // the download's content type
-//     make: (items, { option, onProgress }) => Blob or ReadableStream,
+//     make: (items, { option, options, onProgress }) => Blob or ReadableStream,
+//     note: (options) => 'ustar',        // optional: said after the size in "Created …"
 //   });
 //
 // items are [{ name, file }] with `/`-separated paths. onProgress(done, total).
@@ -18,15 +19,18 @@
 // `name` option ('' = the default name) and the checkbox the bool option
 // `option.name`, whose registry default should match `checked`. They come in
 // as mount(root, { options, openOptions }) and api.setOptions(values), and
-// api.getOptions() reports them. With `openOptions` the row gets [options].
+// api.getOptions() reports them. Other options (tar --format) have no field
+// in the panel: they're kept as set and passed to make() as `options`.
+// With `openOptions` the row gets [options].
 import { el, button, row, fmtBytes, task } from './ui.js';
 import { streamToBlob } from './streams.js';
 import { products } from './products.js';
 
-export function packOp({ verb, option, fixName, save, make }) {
+export function packOp({ verb, option, fixName, save, make, note }) {
   return function mount(root, { options = {}, openOptions } = {}) {
     let sources = []; // [{ path, file }]
     let busy = false;
+    const extra = { ...options }; // every option; name and option.name are read from the fields
     const t = task();
     const summary = el('div', { className: 'muted' });
     const opt = el('input', { type: 'checkbox', checked: option && options[option.name] != null ? !!options[option.name] : !!option?.checked });
@@ -48,9 +52,10 @@ export function packOp({ verb, option, fixName, save, make }) {
       /** { name, [option.name] }: name is '' while the box has the default name. */
       getOptions() {
         const name = nameInput.value.trim();
-        return { name: name === fixName('archive', opt.checked) ? '' : name, ...(option ? { [option.name]: opt.checked } : {}) };
+        return { ...extra, name: name === fixName('archive', opt.checked) ? '' : name, ...(option ? { [option.name]: opt.checked } : {}) };
       },
       setOptions(values) {
+        Object.assign(extra, values);
         if (option && values[option.name] != null) opt.checked = !!values[option.name];
         const name = values.name != null ? values.name || 'archive' : nameInput.value;
         nameInput.value = fixName(name, opt.checked);
@@ -87,10 +92,11 @@ export function packOp({ verb, option, fixName, save, make }) {
       t.status('Creating…');
       try {
         const items = sources.map(({ path, file }) => ({ name: path, file }));
-        const data = await make(items, { option: on, onProgress: (done, total) => t.progress(done, total) });
+        const data = await make(items, { option: on, options: { ...extra }, onProgress: (done, total) => t.progress(done, total) });
         const blob = data instanceof Blob ? data : await streamToBlob(data);
         made.add(name, blob, save(on));
-        t.status(`Created ${name} (${fmtBytes(blob.size)})`);
+        const said = note?.(extra);
+        t.status(`Created ${name} (${fmtBytes(blob.size)}${said ? `, ${said}` : ''})`);
       } catch (e) {
         t.fail(e);
       } finally {

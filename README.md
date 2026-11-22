@@ -112,8 +112,9 @@ Needs `firefox`, `zip` and `unzip` (and `gzip`, `tar`, `xxd`, `hexdump`, `od`, b
   are listed but not extracted; device, fifo and sparse entries are skipped.
 - A compressed tar can only be read from the start: viewing or saving one file
   decompresses everything before it.
-- Written tars have been checked with GNU tar and Python's tarfile. Files over
-  8 GB use a pax size header but haven't been tested with a real file.
+- Written tars (pax, ustar or GNU: `tar -H`) have been checked with GNU tar,
+  Python's tarfile and 7-Zip. Files over 8 GB use a pax size header (GNU:
+  base-256) but haven't been tested with a real file.
 
 ## Limits of lib/ar.js
 

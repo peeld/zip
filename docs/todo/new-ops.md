@@ -35,19 +35,17 @@ and add their content type to the registry `sniff` list (see
 ## Follow-ups on built ops
 
 - [ ] gzip / gunzip: check Chrome and Safari by hand (only Firefox is tested).
-- [ ] base64, once arguments exist: `-w0` (one line), base64url output, a
-  `data:` URL output.
-- [ ] tar: test a real >8 GB file and a pax `path` read by other tools
-  (bsdtar, 7-Zip). Only GNU tar and Python's tarfile check our output now.
+- [ ] base64: base64url output, a `data:` URL output (`-w` is done).
+- [ ] tar: test a real >8 GB file, and bsdtar reading our output. GNU tar,
+  Python's tarfile and 7-Zip check all three `--format`s now.
 - [ ] untar: hard links could be extracted as copies of their target (plain
   .tar only: random access). Symlinks can't be made with the File System
   Access API.
 - [ ] untar: sparse (`S`) and pax sparse entries are listed as other and skipped.
-- [ ] uuencode, once arguments exist: `-m` (write `begin-base64`), and a
-  mode other than 644. uudecode ignores the mode (browsers can't set it).
+- [ ] uuencode: `-m` (write `begin-base64`), and a mode other than 644
+  (the `[name]` is done). uudecode ignores the mode (browsers can't set it).
 - [ ] uudecode: xxencode (`+-0-9A-Za-z` alphabet) and yEnc are not read.
-- [ ] hex, once arguments exist: `-p` (plain), `-c` / `-g` (columns, group
-  size), `-u` (upper case). unhex: C array input (`0x48, 0x65`).
+- [ ] unhex: C array input (`0x48, 0x65`) (hex has xxd's flags now).
 - [ ] hash: BLAKE2b / BLAKE3 / SHA-3 (pure JS, ~150-300 lines each);
   BLAKE2 lines in a list are skipped for now. SHA-224 / SHA-512/256 are
   cheap (other IVs on the existing code).
@@ -64,7 +62,7 @@ and add their content type to the registry `sniff` list (see
 - [ ] ar: a BSD (`#1/N`) output option for macOS `ld`, if anyone asks (llvm
   tools read GNU names).
 - [ ] encode / decode: Z85 (ZeroMQ) and btoa-style ascii85 output; `-w`
-  for base32 once arguments exist. Aliases (`base32`, `unbase32`, `qp`, …)
+  for base32. Aliases (`base32`, `unbase32`, `qp`, …)
   that pre-pick the format, once the registry has aliases (commands.md).
 - [ ] decode: only goes by name (`.b32`, `.qp`, …) or while running. Could
   sniff by content, but `detectEncoding` is a guess (qp vs ascii85 vs text),

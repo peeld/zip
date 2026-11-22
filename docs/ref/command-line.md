@@ -58,7 +58,8 @@ loading the op. The ops with options:
 | `convert` | `[to]`, `-q <1-100>`, `-w` / `-h <px\|%>` |
 | `encode` / `decode` | `[format]` |
 | `zip` | `[name]`, `--compress` / `-0` (store) |
-| `tar`, `cpio` | `[name]`, `-z` / `--no-gzip` |
+| `tar` | `[name]`, `-z` / `--no-gzip`, `-H` / `--format pax\|ustar\|gnu` |
+| `cpio` | `[name]`, `-z` / `--no-gzip` |
 | `ar` | `[name]` |
 | `base64` | `-w <cols>` (0: one line) |
 | `hex` | xxd's `-c <cols>`, `-g <bytes>`, `-u`, `-p`, `-s <offset>`, `-l <len>`, `-o <offset>` |

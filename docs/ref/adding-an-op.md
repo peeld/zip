@@ -136,7 +136,9 @@ Rules:
    packs every file in the list on the left: an op whose API has
    `setFiles(files)` is sent the whole list by the shell whenever it changes,
    instead of `addFiles`. The name box is the registry option `name` and the
-   checkbox the bool option `option.name` (`tar backup --no-gzip`). See `ops/tar/op.js`.
+   checkbox the bool option `option.name` (`tar backup --no-gzip`). Any other
+   options (`tar -H ustar`) have no field in the panel: they reach `make` as
+   `options`, and `note(options)` can add a word to the "Created" line. See `ops/tar/op.js`.
 
    **Results go on the right.** An op that makes files lists them with
    `core/products.js` (`made.add(name, blob, { mime })`) rather than saving

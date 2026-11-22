@@ -440,10 +440,21 @@ doesn't check the CRC.
   `openTarEntry` decompresses up to the entry, and `tarWalk` reads every
   entry in one pass (the archive UI's `each()`, for "Extract all").
 - `createTar`: parent folder entries first, mode 644/755, uid/gid 0, mtime
-  from the File. A pax header (`PaxHeaders/<name>`) when the name doesn't
-  split into ustar prefix 155 + name 100, isn't ASCII, or the size is 8 GB
-  or more. Padded to 10 KB records like GNU tar. `tar` gzips the stream with
-  `lib/gzip.js` when its box is ticked (default).
+  from the File. Padded to 10 KB records like GNU tar. `tar` gzips the
+  stream with `lib/gzip.js` when its box is ticked (default). Three formats
+  (`tar -H` / `--format`, `TAR_FORMATS`):
+  - `pax` (default): ustar headers, plus a pax header when the name doesn't
+    split into ustar prefix 155 + name 100, isn't ASCII, or the size is 8 GB
+    or more. The pax header is named `././@PaxHeader`, as Python's tarfile
+    names it: 7-Zip before 22.00 applies only that name, and lists GNU tar's
+    `PaxHeaders/<name>` as a file instead (checked with 7-Zip 21.07).
+  - `ustar`: no extra headers. UTF-8 names go in the name fields as they are
+    (as GNU tar does). A name that doesn't split, or a file of 8 GB or more,
+    is refused before anything is written, naming the first one.
+  - `gnu`: GNU tar's default: `ustar  \0` magic, no prefix field, a
+    `././@LongLink` (`L`) entry before a name over 100 bytes, base-256 sizes
+    from 8 GB.
+  - Tests check all three with Python's tarfile, GNU `tar -t` and `7zz l`.
 
 ## ar (`lib/ar.js`)
 - Reads every common name style: GNU/SysV (`name/`, a `//` long-name table
