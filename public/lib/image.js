@@ -634,7 +634,8 @@ const PARSERS = {
       const t = b[i];
       if (t === 0x21) {
         const label = b[i + 1];
-        if (label === 0xf9 && b[i + 3] & 1) info.alpha = true;
+        // Only the first frame is kept, so only its transparency counts (Pillow gives later frames one).
+        if (label === 0xf9 && b[i + 3] & 1 && !frames) info.alpha = true;
         else if (label === 0xfe) info.meta.push('comment');
         else if (label === 0xff && str(b, i + 3, 11) === 'XMP DataXMP') info.meta.push('XMP');
         i += 2;
