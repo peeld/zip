@@ -67,7 +67,7 @@ loading the op. The ops with options:
 
 | op | options |
 |---|---|
-| `convert` | `[to]`, `-q <1-100>`, `-w` / `-h <px\|%>` |
+| `convert` | `[to]`, `-q <1-100>`, `-w` / `-h <px\|%>`, `-b <colour>` |
 | `encode` / `decode` | `[format]` |
 | `zip` | `[name]`, `--compress` / `-0` (store) |
 | `tar` | `[name]`, `-z` / `--no-gzip`, `-H` / `--format pax\|ustar\|gnu` |
@@ -84,7 +84,9 @@ up, or a comma list after the flag; the popup shows checkboxes), int
 (decimal or `0x` hex; min / max optional, so `hex -s -10`; with no default
 it stays blank and the op picks: `hex -c`), size, bool
 (`shortOff: '0'` makes `-0` mean `--no-compress`; `short` and `shortOff`
-together give gzip's `-N` / `-n`), text. `what` names the value in help
+together give gzip's `-N` / `-n`), colour (`#rgb`, `#rrggbb`, the `#`
+optional, or a CSS name; kept as `#rrggbb` or the lower-case name;
+`transparent` is refused), text. `what` names the value in help
 (`--seek <offset>`).
 
 - **Typed:** `convert webp -q 80 -w 50%`. One bare word for the positional
@@ -154,8 +156,8 @@ accepts them; otherwise the first op in the registry that does. So specific
 ops (`.zip`, `.tar`, `.a`/`.deb`, `.gz`, `.b64`, `.uu`, `.hex`, `.b32`/`.a85`/`.qp`/`.urlenc`) are listed before the catch-all `zip`, and
 single-file encoders (`gzip`, `base64`, `uuencode`, `hex`, `encode`, `input: {}`) come after it: they only
 get files while they're the running command. So does `convert`, which takes
-one image (by content: png, jpg, gif, webp, bmp, avif, qoi; by name otherwise,
-.ico, .tga and .pbm / .pgm / .ppm / .pnm / .pam included): a dropped image still goes to `zip` unless `convert` is running. `pickOp` tests in
+one image (by content: png, jpg, gif, webp, bmp, avif, qoi, svg, svgz; by name otherwise,
+.ico, .tga, .pbm / .pgm / .ppm / .pnm / .pam and .svg / .svgz included): a dropped image still goes to `zip` unless `convert` is running. `pickOp` tests in
 `test/zip-test.js` pin this down.
 
 Routing by content: when exactly one file is dropped, the shell runs

@@ -13,10 +13,10 @@ list commands, then a command such as `unzip` or `zip`. Or just drop files:
 a single .zip opens in `unzip`, a .tar / .tar.gz / .tar.xz / .tar.zst / .tar.bz2 in `untar`, a .a / .deb in `unar`, a .cpio / .cpio.gz / .cpio.xz / .cpio.zst / .cpio.bz2 or an .rpm in `uncpio`, a .7z in `un7z`, an .iso in `uniso`, a .gz in
 `gunzip`, a .xz / .lzma in `unxz`, a .zst in `unzstd`, a .bz2 in `bunzip2`, a .br in `unbrotli`, a .b64 in `unbase64`, a .uu in `uudecode`, a .hex (or an xxd / hexdump -C dump) in `unhex`, a .b32 / .a85 / .qp / .urlenc in `decode`, anything else goes to `zip`. To check a download, run `hash` and drop the file
 together with its `SHA256SUMS` (or paste the expected hash). To convert an
-image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM in;
+image (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PBM / PGM / PPM / PAM, SVG in;
 PNG, JPEG, WebP, ICO, BMP, TGA, QOI, PPM out), run
 `convert` first: a dropped image goes to `zip` otherwise. Commands with
-settings take them as flags (`convert webp -q 80 -w 50%`, `zip photos -0`, `hash md5 sha1`), or type the
+settings take them as flags (`convert webp -q 80 -w 50%`, `convert jpeg -b black`, `zip photos -0`, `hash md5 sha1`), or type the
 command and a space to pick them in a popup under the prompt. The usual names
 work too: `sha256sum`, `md5sum`, `xxd`, `base32`, `unlzma`, `topng`. Settings and
 the command history are kept in the browser for the next visit (`reset`

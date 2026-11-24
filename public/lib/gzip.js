@@ -198,6 +198,7 @@ export function gunzipName(fileName, header) {
   const stored = header?.name && header.name.replace(/\\/g, '/').split('/').pop();
   if (stored && stored !== '.' && stored !== '..') return stored;
   if (/\.tgz$/i.test(fileName)) return fileName.slice(0, -4) + '.tar';
+  if (/\.svgz$/i.test(fileName)) return fileName.slice(0, -1);
   if (/\.gz$/i.test(fileName) && fileName.length > 3) return fileName.slice(0, -3);
   return fileName + '.out';
 }

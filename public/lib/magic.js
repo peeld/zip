@@ -80,11 +80,18 @@ const ISO_ID = 16 * 2048 + 1;
 const UU = /^begin(-base64)? [0-7]{3,4} [^\r\n]/; // a uuencoded file's first line
 // A hex dump's first line: xxd (`00000000: 4865 …`) or hexdump -C / the viewer (`00000000  48 65 …`).
 const HEX = /^[0-9a-fA-F]{8}(: [0-9a-fA-F]{2}|  [0-9a-fA-F]{2} )/;
+// An SVG document: optional BOM, XML declaration, comments and doctype, then <svg.
+const SVG = /^\uFEFF?\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s>]/i;
+
+/** Whether bytes (the first 4 KB is plenty) start an SVG document. */
+export function isSvg(b) {
+  return SVG.test(new TextDecoder().decode(b.subarray(0, 4096)));
+}
 
 /**
  * Content type of a file for routing: sniffType's ext ('zip', 'gz', 'png', …),
  * 'iso' for an ISO 9660 image (read at byte 32769), 'uu' for text that starts with a uuencode `begin` line, 'hex' for an
- * xxd or hexdump -C dump,
+ * xxd or hexdump -C dump, 'svg' for an SVG document (and 'svgz' gzipped),
  * 'tar.gz' / 'cpio.gz' (likewise .xz, .zst, .bz2) for a compressed file whose content
  * starts with a tar / cpio header, or null.
  * Reads the first 512 bytes (and, when compressed, decompresses the first 512 bytes inside).
@@ -103,6 +110,7 @@ export async function sniffFile(file) {
     // then lib/lzma.js's stricter one.
     if (head.length >= 14 && head[0] < 225 && head[1] === 0 && head[13] === 0
       && (await import('./lzma.js')).isLzmaAlone(head)) return 'lzma';
+    if (isSvg(head)) return 'svg';
     const text = String.fromCharCode.apply(null, head);
     return UU.test(text) ? 'uu' : HEX.test(text) ? 'hex' : null;
   }
@@ -129,6 +137,7 @@ export async function sniffFile(file) {
     reader.cancel().catch(() => {});
   }
   const innerExt = sniffType(inner.subarray(0, n))?.ext;
+  if (t.ext === 'gz' && !innerExt && isSvg(inner.subarray(0, n))) return 'svgz';
   return innerExt === 'tar' || innerExt === 'cpio' ? `${innerExt}.${t.ext}` : t.ext;
 }
 

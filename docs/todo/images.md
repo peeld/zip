@@ -1,10 +1,12 @@
 # Image conversion: plan
 
-Status (2026-11-20): **phases 1 and 2 done**: `convert` turns one image
-(PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PNM) into PNG, JPEG, WebP,
-ICO, BMP, TGA, QOI or PPM, in the browser, with nothing uploaded
+Status (2026-11-23): **phases 1, 2 and 3 done**: `convert` turns one image
+(PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PNM, SVG / SVGZ) into PNG, JPEG, WebP,
+ICO, BMP, TGA, QOI or PPM, in the browser, with nothing uploaded, with a
+background colour (`-b`) if wanted
 ([../done/2026-11-20-image-convert.md](../done/2026-11-20-image-convert.md),
-[../done/2026-11-20-image-formats.md](../done/2026-11-20-image-formats.md);
+[../done/2026-11-20-image-formats.md](../done/2026-11-20-image-formats.md),
+[../done/2026-11-23-svg-and-background.md](../done/2026-11-23-svg-and-background.md);
 how it works: [../ref/formats.md](../ref/formats.md), "Images"). The later
 phases below are open.
 
@@ -39,10 +41,12 @@ probe it before relying on it.
 - Firefox: `imageOrientation: 'from-image'` applies EXIF orientation 6
   (tested); a 16-bit PNG comes out within 0.5 of value / 257; a cut-off or
   corrupt image decodes partially instead of failing.
+- SVG: `<img>` + `img.decode()` + `drawImage` on the page works in Firefox
+  (tested); an SVG with no width / height / viewBox draws as nothing unless
+  given a size, so the root tag is rewritten to the output size.
 - Not checked yet: Chrome and Safari (Safari can't encode WebP: `convert`
-  says so), AVIF input (no fixture), `createImageBitmap` on an SVG Blob
-  (Chrome rejects it; expect to need `<img>` + `img.decode()` + `drawImage`
-  on the page).
+  says so; Chrome may taint the canvas for an SVG with `<foreignObject>`),
+  AVIF input (no fixture).
 - Test fixtures: Pillow 9.0 is installed with webp, webp_anim, jpg, zlib and
   libtiff. ImageMagick, cwebp and exiftool are not.
 
@@ -96,14 +100,16 @@ only takes images while it's running. The original plan:
 1. ~~**Resize**~~: done, as `convert -w` / `-h` (pixels or %, both = fit
    inside), with `-q` for JPEG / WebP quality
    ([../done/2026-11-21-command-options.md](../done/2026-11-21-command-options.md)).
-   Left: crop, and a choice of background for transparency in JPEG / BMP / PPM.
+   ~~A background colour~~: done, `convert -b <colour>`
+   ([../done/2026-11-23-svg-and-background.md](../done/2026-11-23-svg-and-background.md)).
+   Left: crop.
 2. ~~**Our own writers in pure JS**: ICO, QOI, PPM / PGM, TGA, and readers.~~
    Done: `lib/imagefmt.js`. Left: PGM / PAM output (grey, 16-bit), RLE TGA
    output, ICO with BMP entries for Windows XP, .cur hotspots.
-3. **SVG to PNG** (allowed under the `<img>` exception): main thread only (no
-   `<img>` in a worker), so cap the pixel size. An SVG without width / height
-   needs a size from the user or a default. Load only from a `blob:` URL;
-   never inline the markup.
+3. ~~**SVG to PNG**~~: done, to every output format, drawn at the output
+   size (`-w` / `-h`), .svgz too
+   ([../done/2026-11-23-svg-and-background.md](../done/2026-11-23-svg-and-background.md)).
+   Left: SVGZ preview in the viewer; trying Chrome / Safari.
 4. **GIF writing** (needs colour quantisation: median cut or octree, plus LZW;
    medium), **TIFF reading** (medium; baseline + LZW / Deflate first).
 5. **AVIF / JPEG XL / HEIC:** would need WebAssembly codecs of ~1 MB+ each
@@ -118,4 +124,4 @@ only takes images while it's running. The original plan:
 - Name: went with `convert`, with aliases `topng`, `tojpg`, `towebp`, `toico`.
 - Several files at once (a folder of HEIC → JPEG is a common wish)?
   `transformOp` is one file in, one out; a batch would want a zip of the outputs.
-- Transparency in JPEG / BMP: white for now; a `--background` option now that there are options.
+- ~~Transparency in JPEG / BMP~~: white unless `-b` says otherwise.

@@ -11,8 +11,12 @@
 // is put together below. The browser's decode applies EXIF
 // rotation and converts colours to sRGB; everything else in the file
 // (metadata, extra frames, 16-bit depth) is lost, and imageNotes says what.
+//
+// SVG (and gzipped .svgz) is read here for its size (svgSize) and resized
+// to the output size (sizedSvg), but drawn on the page by the op through <img>:
+// a worker has no <img>, and createImageBitmap won't take an SVG Blob everywhere.
 
-import { sniffType } from './magic.js';
+import { sniffType, isSvg } from './magic.js';
 import { READERS, WRITERS, pnmHeader, tgaHeader } from './imagefmt.js';
 
 /**
@@ -134,7 +138,9 @@ async function decode(blob) {
  */
 async function load(blob) {
   // 64 KB: room for a PNM header with long comments.
-  const format = await sniffImage(blob, new Uint8Array(await blob.slice(0, 1 << 16).arrayBuffer()));
+  const head = new Uint8Array(await blob.slice(0, 1 << 16).arrayBuffer());
+  if (isSvg(head) || isGzip(head)) throw new Error("an SVG has to be drawn on the page first (ops/convert does): it can't be decoded here");
+  const format = await sniffImage(blob, head);
   if (format === 'qoi' || format === 'pnm' || format === 'tga') {
     return READERS[format](new Uint8Array(await blob.arrayBuffer()), checkSize);
   }
@@ -160,21 +166,65 @@ function rowsOf(src) {
   return (top, n) => ctx.getImageData(0, top, width, n).data;
 }
 
-const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+/**
+ * '#rrggbb' or a CSS colour name as [r, g, b]. Names go through a 1 × 1 canvas
+ * (which also works in a worker). Throws for a colour that isn't opaque.
+ */
+export function colourRgb(colour) {
+  const hex = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(colour.trim());
+  if (hex) {
+    const h = hex[1].length === 3 ? hex[1].replace(/./g, '$&$&') : hex[1];
+    return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  }
+  needCanvas();
+  const ctx = new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
+  // A colour the canvas doesn't know leaves fillStyle as it was: try from two starting points.
+  const seen = ['#000000', '#ffffff'].map((start) => {
+    ctx.fillStyle = start;
+    ctx.fillStyle = colour;
+    return ctx.fillStyle;
+  });
+  if (seen[0] !== seen[1]) throw new Error(`not a colour: ${colour}`);
+  ctx.clearRect(0, 0, 1, 1);
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+  if (a !== 255) throw new Error(`not an opaque colour: ${colour}`);
+  return [r, g, b];
+}
+
+const toHex = (c) => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+
+/** rows(top, n) with every pixel laid over the colour `bg` ([r, g, b]): opaque. */
+function flatRows(rows, bg) {
+  return (top, n) => {
+    const px = rows(top, n).slice();
+    for (let i = 0; i < px.length; i += 4) {
+      const a = px[i + 3];
+      if (a === 255) continue;
+      for (let k = 0; k < 3; k++) px[i + k] = Math.round((px[i + k] * a + bg[k] * (255 - a)) / 255);
+      px[i + 3] = 255;
+    }
+    return px;
+  };
+}
 
 /**
  * Convert an image to OUTPUTS[type] ('png', 'jpeg', 'webp', 'ico', 'bmp',
- * 'tga', 'qoi', 'ppm'). Formats without alpha (JPEG, BMP, PPM) get
- * `background` ('#rrggbb') behind transparent pixels. Resolves to a Blob of
- * the output's mime type. Works in a worker. QOI / PNM / TGA in and BMP /
- * TGA / QOI / PPM out go through RGBA pixels without a canvas, so between
- * those it's exact (transparent pixels keep their colour too), unless resized.
+ * 'tga', 'qoi', 'ppm'). Resolves to a Blob of the output's mime type. Works
+ * in a worker. QOI / PNM / TGA in and BMP / TGA / QOI / PPM out go through
+ * RGBA pixels without a canvas, so between those it's exact (transparent
+ * pixels keep their colour too), unless resized.
+ * `background` ('#rrggbb' or a CSS colour name): lay the image over it, so
+ * nothing is left transparent. Without it, formats that can't hold alpha
+ * (JPEG, BMP, PPM) get white.
  * `width` / `height`: resize (see resizedSize), through scaled().
  */
-export async function convertImage(blob, { type = 'png', quality = QUALITY, background = '#ffffff', width: rw, height: rh } = {}) {
+export async function convertImage(blob, { type = 'png', quality = QUALITY, background = '', width: rw, height: rh } = {}) {
   const out = output(type);
   if (!out.ours) needCanvas();
   if (!(await canWrite(out.mime))) throw new Error(`this browser can't write ${out.label}`);
+  const bg = colourRgb(background || '#ffffff');
+  const flatten = !!background || !out.alpha;
   const src = await load(blob);
   try {
     checkSize(src.width, src.height);
@@ -183,17 +233,18 @@ export async function convertImage(blob, { type = 'png', quality = QUALITY, back
     // Resized: from here on the image is a canvas of the new size.
     const img = width === src.width && height === src.height ? src
       : (needCanvas(), { width, height, bitmap: scaled(await bitmapOf(src), width, height) });
-    if (out.id === 'ico') return await writeIco(await bitmapOf(img));
+    if (out.id === 'ico') return await writeIco(await bitmapOf(img), background && toHex(bg));
     if (out.ours) {
       if (!img.pixels) needCanvas();
-      return WRITERS[out.id](rowsOf(img), width, height, rgb(background));
+      const rows = rowsOf(img);
+      return WRITERS[out.id](flatten ? flatRows(rows, bg) : rows, width, height, bg);
     }
     const bitmap = await bitmapOf(img);
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d', out.alpha ? {} : { alpha: false });
     if (!ctx) throw new Error(`can't make a ${width} × ${height} canvas (out of memory?)`);
-    if (!out.alpha) {
-      ctx.fillStyle = background;
+    if (flatten) {
+      ctx.fillStyle = toHex(bg);
       ctx.fillRect(0, 0, width, height);
     }
     ctx.drawImage(bitmap, 0, 0);
@@ -227,18 +278,24 @@ export function scaled(source, w, h) {
 
 /**
  * An ICO holding the image at icoSizes (PNG inside each entry, as Windows
- * Vista and every browser read). Not square: centred on a transparent square.
+ * Vista and every browser read). Not square: centred on a transparent square
+ * (or one filled with `background`, '#rrggbb', which also goes behind the image).
  */
-async function writeIco(bitmap) {
+async function writeIco(bitmap, background) {
   const sizes = icoSizes(bitmap.width, bitmap.height);
   const pngs = [];
   for (const s of sizes) {
     const k = s / Math.max(bitmap.width, bitmap.height);
     const w = Math.max(1, Math.round(bitmap.width * k)), h = Math.max(1, Math.round(bitmap.height * k));
     let img = scaled(bitmap, w, h);
-    if (w !== s || h !== s) {
+    if (w !== s || h !== s || background) {
       const sq = new OffscreenCanvas(s, s);
-      sq.getContext('2d').drawImage(img, (s - w) >> 1, (s - h) >> 1);
+      const ctx = sq.getContext('2d');
+      if (background) {
+        ctx.fillStyle = background;
+        ctx.fillRect(0, 0, s, s);
+      }
+      ctx.drawImage(img, (s - w) >> 1, (s - h) >> 1);
       img = sq;
     }
     const png = await img.convertToBlob({ type: 'image/png' });
@@ -262,11 +319,149 @@ async function writeIco(bitmap) {
   return new Blob([head, ...pngs], { type: 'image/x-icon' });
 }
 
+// ------------------------------------------------------------------ SVG
+
+/** The largest SVG (after gunzip) convert reads: it's drawn on the page, and a heavy one stalls the tab. */
+export const SVG_MAX_BYTES = 32 << 20;
+/** The largest image an SVG is drawn at (on the page, so less than a worker's canvas). */
+export const SVG_MAX_PIXELS = 8192 * 8192;
+/** What browsers draw an SVG at when it gives no size at all. */
+export const SVG_DEFAULT = [300, 150];
+
+/** Why an SVG can't be drawn at width × height, or null. */
+export function svgTooBig(width, height) {
+  if (width * height <= SVG_MAX_PIXELS) return tooBig(width, height);
+  return `too big to draw: ${width} × ${height} is ${Math.round(width * height / 1e6)} megapixels (an SVG is drawn on the page: at most ${Math.round(SVG_MAX_PIXELS / 1e6)})`;
+}
+
+const isGzip = (b) => b[0] === 0x1f && b[1] === 0x8b;
+
+/** At most `limit` bytes of a stream (and whether it ended within them). */
+async function readUpTo(stream, limit) {
+  const reader = stream.getReader();
+  const parts = [];
+  let n = 0;
+  try {
+    while (n < limit) {
+      const { value, done } = await reader.read();
+      if (done) return { bytes: join(parts, n), done: true };
+      parts.push(value);
+      n += value.length;
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+  return { bytes: join(parts, n).subarray(0, limit), done: false };
+}
+
+function join(parts, n) {
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
+/**
+ * An SVG or .svgz file's markup, gunzipped. `limit`: read at most that many
+ * bytes (for the header); without it the whole file, up to SVG_MAX_BYTES.
+ */
+export async function svgText(blob, limit) {
+  const b = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+  const max = limit ?? SVG_MAX_BYTES;
+  if (!isGzip(b) && limit == null && blob.size > max) throw new Error(`too big to convert: an SVG of over ${max >> 20} MB`);
+  const stream = isGzip(b) ? blob.stream().pipeThrough(new DecompressionStream('gzip')) : blob.slice(0, max + 1).stream();
+  let got;
+  try {
+    got = await readUpTo(stream, max + 1);
+  } catch (e) {
+    if (limit == null) throw new Error(`can't read this .svgz: ${e?.message || e}`);
+    got = { bytes: new Uint8Array(), done: true };
+  }
+  if (got.bytes.length > max) {
+    if (limit == null) throw new Error(`too big to convert: an SVG of over ${max >> 20} MB`);
+    got.bytes = got.bytes.subarray(0, max);
+  }
+  return new TextDecoder().decode(got.bytes);
+}
+
+// The root <svg …> start tag, with its attributes (quoted values may hold '>').
+const SVG_ROOT = /<svg((?:\s+[^\s=>/]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))?)*)\s*(\/?)>/i;
+const ATTR = /([^\s=]+)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g;
+// CSS units in px (1in = 96px); % and unknown units have no fixed size.
+const UNITS = { '': 1, px: 1, pt: 4 / 3, pc: 16, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, q: 96 / 101.6, em: 16, ex: 8 };
+
+function svgRoot(text) {
+  const m = SVG_ROOT.exec(text);
+  if (!m) return null;
+  const attrs = {};
+  for (const [, k, v = ''] of m[1].matchAll(ATTR)) attrs[k] = v.replace(/^(["'])([\s\S]*)\1$/, '$2');
+  return { at: m.index, tag: m[0], body: m[1], close: m[2], attrs };
+}
+
+function svgLength(v) {
+  const m = /^\s*\+?(\d*\.?\d+(?:e[+-]?\d+)?)\s*([a-z]*)\s*$/i.exec(v ?? '');
+  const k = m && UNITS[m[2].toLowerCase()];
+  const n = k && Number(m[1]) * k;
+  return n > 0 && Number.isFinite(n) ? n : null;
+}
+
+function svgViewBox(v) {
+  const n = (v ?? '').trim().split(/[\s,]+/).map(Number);
+  return n.length === 4 && n.every(Number.isFinite) && n[2] > 0 && n[3] > 0 ? n : null;
+}
+
+/**
+ * The size an SVG's root tag gives it: { width, height (whole pixels, at
+ * least 1), from: 'size' (width / height), 'viewBox', or 'default' (300 ×
+ * 150, as browsers do), natural: [w, h] unrounded, viewBox }. A width or
+ * height alone takes the other from the viewBox's aspect ratio.
+ */
+export function svgSize(text) {
+  const root = svgRoot(text);
+  const a = root?.attrs || {};
+  const w = svgLength(a.width), h = svgLength(a.height), vb = svgViewBox(a.viewBox);
+  let natural, from = 'size';
+  if (w && h) natural = [w, h];
+  else if (vb && (w || h)) natural = w ? [w, w * vb[3] / vb[2]] : [h * vb[2] / vb[3], h];
+  else if (vb) { natural = [vb[2], vb[3]]; from = 'viewBox'; }
+  else { natural = [w || SVG_DEFAULT[0], h || SVG_DEFAULT[1]]; from = w || h ? 'size' : 'default'; }
+  const [width, height] = natural.map((v) => Math.max(1, Math.round(v)));
+  return { width, height, from, natural, viewBox: vb };
+}
+
+/**
+ * The SVG markup with its root tag set to width × height, so the browser
+ * draws it at that size (sharp, not a scaled-up raster; and Firefox draws an
+ * SVG without a size as nothing). Without a viewBox, one of its own size is
+ * added so the drawing scales. Nothing else in the markup changes.
+ */
+export function sizedSvg(text, width, height) {
+  const root = svgRoot(text);
+  if (!root) throw new Error('not an SVG: no <svg> tag');
+  const { natural, viewBox } = svgSize(text);
+  const rest = root.body.replace(/\s(width|height)(\s*=\s*("[^"]*"|'[^']*'|[^\s"'>]+))?/g, '');
+  const vb = viewBox ? '' : ` viewBox="0 0 ${natural.map((v) => +v.toFixed(4)).join(' ')}"`;
+  const tag = `<svg width="${width}" height="${height}"${vb}${rest}${root.close ? ' /' : ''}>`;
+  return text.slice(0, root.at) + tag + text.slice(root.at + root.tag.length);
+}
+
+/** imageInfo for SVG markup: the size, and what in it won't come through. */
+function svgInfo(text, info) {
+  const size = svgSize(text);
+  Object.assign(info, { width: size.width, height: size.height, alpha: true, vector: true, sizeFrom: size.from });
+  info.animated = /<(animate\w*|set)[\s/>]|@keyframes/i.test(text);
+  info.script = /<script[\s/>]|\son[a-z]+\s*=/i.test(text);
+  // A reference to another file (not data:, not #fragment): an <img> loads none of them.
+  info.external = /\s(?:xlink:)?href\s*=\s*["'](?!\s*(?:data:|#))[^"']|url\(\s*["']?(?!\s*(?:data:|#))[^)'"\s]|@import\s/i.test(text);
+  if (/<metadata[\s>]/i.test(text)) info.meta.push('metadata');
+  if (/<!--/.test(text)) info.meta.push('comment');
+}
+
 // ------------------------------------------------------------------ inspect
 
 const HEAD = 1 << 20; // header bytes read by imageInfo
 
-const LABELS = { png: 'PNG', jpg: 'JPEG', gif: 'GIF', webp: 'WebP', bmp: 'BMP', avif: 'AVIF', ico: 'ICO', qoi: 'QOI', pnm: 'PNM', tga: 'TGA' };
+const LABELS = { png: 'PNG', jpg: 'JPEG', gif: 'GIF', webp: 'WebP', bmp: 'BMP', avif: 'AVIF', ico: 'ICO', qoi: 'QOI', pnm: 'PNM', tga: 'TGA', svg: 'SVG' };
 
 const str = (b, at, n) => String.fromCharCode(...b.subarray(at, at + n));
 const be16 = (b, i) => (b[i] << 8) | b[i + 1];
@@ -308,8 +503,6 @@ export async function sniffImage(blob, b) {
 
 // What <img> shows without help (AVIF and ICO in most browsers; if not, the preview says it couldn't).
 const SHOWN = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', ico: 'image/x-icon' };
-// An SVG document: optional BOM, XML declaration, comments and doctype, then <svg.
-const SVG = /^\uFEFF?\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\s*)*<svg[\s>]/i;
 
 /**
  * Whether the viewer can show these first bytes of `name` as an image:
@@ -317,7 +510,7 @@ const SVG = /^\uFEFF?\s*(<\?xml[^>]*\?>\s*)?(<!--[\s\S]*?-->\s*|<!DOCTYPE[^>]*>\
  * for TGA / QOI / PNM) }, or null.
  */
 export async function previewType(b, name = '') {
-  if (SVG.test(new TextDecoder().decode(b.subarray(0, 4096)))) return { format: 'svg', label: 'SVG', mime: 'image/svg+xml', convert: false };
+  if (isSvg(b)) return { format: 'svg', label: 'SVG', mime: 'image/svg+xml', convert: false };
   // Only the start is here, so a TGA goes by its name (sniffImage would look for the footer at the end of these bytes).
   const format = await sniffImage(new File([b], name), b);
   if (!format) return null;
@@ -326,27 +519,37 @@ export async function previewType(b, name = '') {
 
 /**
  * What an image's header says, without decoding it:
- *   { format: 'png' | 'jpg' | 'gif' | 'webp' | 'bmp' | 'avif' | 'ico' | 'qoi' | 'pnm' | 'tga',
+ *   { format: 'png' | 'jpg' | 'gif' | 'webp' | 'bmp' | 'avif' | 'ico' | 'qoi' | 'pnm' | 'tga' | 'svg',
  *     label ('PNG', …; PNM: 'PBM', 'PGM', 'PPM' or 'PAM'),
  *     width, height (as shown: after EXIF rotation; null if not found),
  *     alpha (can hold transparency), animated, depth (bits per channel),
  *     orientation (EXIF, 1-8; JPEG only), sizes (ICO: how many),
  *     meta: ['EXIF', 'GPS location', 'XMP', 'ICC profile', 'text', …] }
+ * An SVG also has vector, sizeFrom (svgSize's `from`), script, external
+ * (links to other files), gzipped (.svgz); its size is read from the first 1 MB.
  * Throws if it isn't an image format this reads.
  */
 export async function imageInfo(blob) {
   const b = new Uint8Array(await blob.slice(0, HEAD).arrayBuffer());
+  const info = (format) => ({ format, label: LABELS[format], width: null, height: null, alpha: false, animated: false, depth: 8, orientation: 1, meta: [] });
+  if (isSvg(b) || (isGzip(b) && isSvg(new TextEncoder().encode(await svgText(blob, 4096))))) {
+    const i = info('svg');
+    if (isGzip(b)) i.gzipped = true;
+    svgInfo(await svgText(blob, HEAD), i);
+    i.meta = [...new Set(i.meta)];
+    return i;
+  }
   const format = await sniffImage(blob, b);
   const parse = PARSERS[format];
-  if (!parse) throw new Error('not an image this can convert (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI or PNM)');
-  const info = { format, label: LABELS[format], width: null, height: null, alpha: false, animated: false, depth: 8, orientation: 1, meta: [] };
+  if (!parse) throw new Error('not an image this can convert (PNG, JPEG, GIF, WebP, BMP, ICO, AVIF, TGA, QOI, PNM or SVG)');
+  const i = info(format);
   try {
-    parse(b, info);
+    parse(b, i);
   } catch {
     // A cut-off or odd header: report what was found; the decoder has the last word.
   }
-  info.meta = [...new Set(info.meta)];
-  return info;
+  i.meta = [...new Set(i.meta)];
+  return i;
 }
 
 /** Orientation and GPS from an EXIF block (a TIFF header and IFD0). */
@@ -554,19 +757,28 @@ const PARSERS = {
 /**
  * What converting to OUTPUTS[type] keeps and loses, as short phrases for the
  * user: resize, transparency filled, frames, metadata, depth, lossy encoding.
- * `options`: the op's { quality (1-100), width, height }.
+ * `options`: the op's { quality (1-100), width, height, background }.
  */
-export function imageNotes(info, type, { quality = QUALITY * 100, width, height } = {}) {
+export function imageNotes(info, type, { quality = QUALITY * 100, width, height, background } = {}) {
   const out = output(type);
   const notes = [];
-  if (width || height) {
+  if (info.vector) {
+    // An SVG is drawn at its output size: "resized" isn't quite it.
+    const [w, h] = resizedSize(info.width, info.height, { width, height });
+    notes.push(width || height ? `drawn at ${w} × ${h}`
+      : info.sizeFrom === 'default' ? `no size in the file: drawn at ${w} × ${h}`
+        : `drawn at ${w} × ${h}${info.sizeFrom === 'viewBox' ? ' (its viewBox)' : ''}`);
+  } else if (width || height) {
     if (info.width == null) notes.push('resized');
     else {
       const [w, h] = resizedSize(info.width, info.height, { width, height });
       notes.push(w === info.width && h === info.height ? 'already that size' : `resized to ${w} × ${h}`);
     }
   }
-  if (info.alpha && !out.alpha) notes.push('any transparency becomes white');
+  if (info.alpha || (background && out.id === 'ico')) {
+    if (!out.alpha) notes.push(`any transparency becomes ${background || 'white'}`);
+    else if (background) notes.push(`laid over ${background}: no transparency left`);
+  }
   if (out.id === 'ico') {
     notes.push(info.width != null ? `${icoSizes(info.width, info.height).join(', ')} px icons` : 'icons up to 256 px');
     if (info.width !== info.height) notes.push('padded to a square');
@@ -574,6 +786,8 @@ export function imageNotes(info, type, { quality = QUALITY * 100, width, height 
   if (info.animated) notes.push('only the first frame is kept');
   if (info.sizes > 1) notes.push(out.id === 'ico' ? `made again from the largest of its ${info.sizes} sizes` : `${info.sizes} icon sizes: only one is kept`);
   if (info.orientation > 1) notes.push('turned upright from its EXIF orientation');
+  if (info.script) notes.push("its scripts don't run");
+  if (info.external) notes.push('files it links to are left out');
   if (info.depth > 8) notes.push(`${info.depth}-bit: written as 8-bit`);
   const meta = info.meta.filter((m) => m !== 'ICC profile');
   if (meta.length) notes.push(`${meta.join(', ')} dropped`);

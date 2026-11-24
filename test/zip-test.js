@@ -23,7 +23,7 @@ import { readIso, openIsoEntry, isIso } from '../public/lib/iso.js';
 import { bunzip2, bunzip2Name, isBzip2 } from '../public/lib/bzip2.js';
 import { readStart, countBytes, streamToBlob } from '../public/core/streams.js';
 import { offload, offloadStats, setOffloadThreshold } from '../public/lib/offload.js';
-import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig, resizedSize, OUTPUTS } from '../public/lib/image.js';
+import { imageInfo, imageNotes, convertImage, canWrite, convertedName, tooBig, resizedSize, OUTPUTS, svgSize, sizedSvg, svgText, colourRgb, svgTooBig } from '../public/lib/image.js';
 import { tokenize, quote, parseArgs, formatArgs, defaults, sameValue, optionHelp, completeArg, optionsForm } from '../public/core/options.js';
 import { loadSettings, saveSettings, loadHistory, saveHistory, clearAll } from '../public/core/store.js';
 import { ALGOS, hasher, hashStream, toHex, formatSums, parseSums, sumsFileAlgo, parseExpected } from '../public/lib/hash.js';
@@ -1435,8 +1435,9 @@ async function run() {
       && by('x.dat', 'bmp', 'convert') === 'convert' && by('x.png', 'zip', 'convert') === 'unzip' && id([jpg, jpg], 'convert') === 'zip'
       && id([f('a.txt')], 'convert') === 'zip' && id([f('fav.ico')], 'convert') === 'convert' && by('x.dat', 'png') === 'zip'
       && by('x.dat', 'qoi', 'convert') === 'convert' && id([f('a.tga')], 'convert') === 'convert' && id([f('scan.pgm')], 'convert') === 'convert'
-      && id([f('a.ppm')]) === 'zip',
-      'pickOp: convert takes one image only while running; images still go to zip otherwise');
+      && id([f('a.ppm')]) === 'zip' && by('a.svg', 'svg', 'convert') === 'convert' && by('a.svg', 'svg') === 'zip'
+      && by('x.dat', 'svgz', 'convert') === 'convert' && by('a.svgz', 'svgz') === 'gunzip' && id([f('b.svg')], 'convert') === 'convert',
+      'pickOp: convert takes one image (SVG too) only while running; images still go to zip otherwise, .svgz to gunzip');
     check(id([jpg, zipF], 'hash') === 'hash' && id([f('SHA256SUMS'), jpg], 'hash') === 'hash' && id([f('SHA256SUMS')]) === 'zip',
       'pickOp: hash takes any files while running');
   }
@@ -1907,7 +1908,7 @@ async function optionsTests() {
   check(help[0].startsWith('[png|jpeg|webp|ico|bmp|tga|qoi|ppm]') && help.some((l) => /^-q, --quality <1-100> +JPEG \/ WebP quality \(default 90\)$/.test(l)),
     `optionHelp (${help.join(' | ')})`);
   check(completeArg(convert, [], 'w').join() === 'webp' && completeArg(convert, [], '--w').join() === '--width'
-    && completeArg(convert, [], '-').length === 3 && completeArg(OPS.find((o) => o.id === 'encode'), [], 'base').join() === 'base32,base32hex',
+    && completeArg(convert, [], '-').length === 4 && completeArg(OPS.find((o) => o.id === 'encode'), [], 'base').join() === 'base32,base32hex',
     'completeArg: values and flags');
   // The registry's lists match the ops' own.
   check(convert.options[0].values.map(([id]) => id).join() === OUTPUTS.map((o) => o.id).join()
@@ -1915,10 +1916,10 @@ async function optionsTests() {
     'registry options match lib/image.js OUTPUTS and lib/textenc.js ENCODINGS');
   let got = null;
   const form = optionsForm(convert, { ...defaults(convert), quality: 60 }, (vals) => { got = vals; });
-  check(form.fields.to.value === 'png' && form.fields.quality.value === '60' && form.el.querySelectorAll('label').length === 4, 'optionsForm: fields set');
+  check(form.fields.to.value === 'png' && form.fields.quality.value === '60' && form.el.querySelectorAll('label').length === 5, 'optionsForm: fields set');
   form.fields.width.value = '25%';
   form.fields.width.dispatchEvent(new Event('input'));
-  check(JSON.stringify(got) === '{"to":"png","quality":60,"width":"25%","height":""}', `optionsForm: reports every value on a change (${JSON.stringify(got)})`);
+  check(JSON.stringify(got) === '{"to":"png","quality":60,"width":"25%","height":"","background":""}', `optionsForm: reports every value on a change (${JSON.stringify(got)})`);
 
   // The pack ops: a positional name, and -0 for --no-compress.
   const zipOp = OPS.find((o) => o.id === 'zip'), tarOp = OPS.find((o) => o.id === 'tar');
@@ -2058,6 +2059,128 @@ async function optionsTests() {
   const text = root.querySelector('.muted')?.textContent || '';
   check(sel.value === 'jpeg' && text.includes('As JPEG: resized to 32 × 24;') && text.includes('quality 50') && api.getOptions().width === '50%',
     `transformOp: setOptions re-checks the file (${text})`);
+
+  // SVG: its size from the root tag, drawn on the page at the output size.
+  {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const wait = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await sleep(50); return cond(); };
+    const S = (attrs, body = '') => `<?xml version="1.0"?>\n<svg xmlns="http://www.w3.org/2000/svg"${attrs}>${body}</svg>`;
+    const sz = (attrs) => { const r = svgSize(S(attrs)); return `${r.width}x${r.height} ${r.from}`; };
+    check(sz(' width="40" height="20"') === '40x20 size' && sz(" width='1in' height='0.5in'") === '96x48 size'
+      && sz(' viewBox="0 0 30 10"') === '30x10 viewBox' && sz(' width="60" viewBox="0,0,30,10"') === '60x20 size'
+      && sz(' height="5mm" viewBox="0 0 2 1"') === '38x19 size' && sz('') === '300x150 default' && sz(' width="100%" height="100%" viewBox="0 0 8 4"') === '8x4 viewBox'
+      && sz(' width="12.4px" height="9.6"') === '12x10 size' && sz(' width="50" height="bad"') === '50x150 size',
+      'svgSize: width / height (units), viewBox, one side plus the aspect ratio, % and junk ignored, 300 x 150 by default');
+    const re = sizedSvg(S(' width="10" stroke-width="3" height="5"', '<rect width="10" height="5"/>'), 40, 20);
+    check(re.includes('<svg width="40" height="20" viewBox="0 0 10 5" xmlns=') && re.includes('stroke-width="3"') && re.includes('<rect width="10" height="5"/>')
+      && !/<svg[^>]*width="10"/.test(re) && sizedSvg(S(' viewBox="0 0 2 1"'), 8, 4).includes('<svg width="8" height="4" xmlns')
+      && sizedSvg('<svg viewBox="0 0 1 1"/>', 3, 3) === '<svg width="3" height="3" viewBox="0 0 1 1" />',
+      `sizedSvg: the root tag gets the size (and a viewBox if it had none); nothing else changes (${re.slice(22, 110)})`);
+
+    // Left half red, right half transparent; 20 x 10 user units, no width / height.
+    const half = S(' viewBox="0 0 20 10"', '<rect width="10" height="10" fill="#f00"/><script>parent.svgDrawRan = 1</script>'
+      + '<image href="https://example.com/x.png" width="1" height="1"/>');
+    const svgFile = new File([half], 'half.svg', { type: 'image/svg+xml' });
+    const gz = new File([await streamToBlob(new Blob([half]).stream().pipeThrough(new CompressionStream('gzip')))], 'half.svgz');
+    check(await sniffFile(svgFile) === 'svg' && await sniffFile(gz) === 'svgz' && gunzipName('half.svgz', {}) === 'half.svg'
+      && await svgText(gz) === half, 'sniffFile: svg and svgz; gunzipName: .svgz -> .svg; svgText gunzips');
+    const si = await imageInfo(svgFile), gi = await imageInfo(gz);
+    check(si.format === 'svg' && si.label === 'SVG' && si.width === 20 && si.height === 10 && si.vector && si.alpha && si.script && si.external
+      && !si.animated && !si.gzipped && gi.gzipped && gi.width === 20,
+      `imageInfo: an SVG and an .svgz (${JSON.stringify(si)})`);
+    const n0 = imageNotes(si, 'png').join('; '), n1 = imageNotes(si, 'jpeg', { width: '200' }).join('; ');
+    check(n0 === "drawn at 20 × 10 (its viewBox); its scripts don't run; files it links to are left out; lossless"
+      && n1.startsWith('drawn at 200 × 100; any transparency becomes white')
+      && imageNotes(await imageInfo(new Blob([S('')])), 'png')[0] === 'no size in the file: drawn at 300 × 150'
+      && imageNotes(await imageInfo(new Blob([S(' width="4" height="4"', '<animate/>')])), 'png').includes('only the first frame is kept'),
+      `imageNotes: SVG (${n0} | ${n1})`);
+    check(svgTooBig(8192, 8192) === null && /drawn on the page/.test(svgTooBig(10000, 10000)), 'svgTooBig: 64 megapixels at most');
+    let wmsg = '';
+    try { await convertImage(svgFile); } catch (e) { wmsg = e.message; }
+    check(wmsg.startsWith('an SVG has to be drawn on the page'), `convertImage: an SVG in a worker says why not (${wmsg})`);
+
+    const { drawSvg } = await import('../public/ops/convert/op.js');
+    const pixels = async (blob) => {
+      const b = await createImageBitmap(blob);
+      const c = new OffscreenCanvas(b.width, b.height).getContext('2d');
+      c.drawImage(b, 0, 0);
+      return { w: b.width, h: b.height, at: (x, y) => [...c.getImageData(x, y, 1, 1).data].join() };
+    };
+    const big = await pixels(await drawSvg(svgFile, 200, 100));
+    check(big.w === 200 && big.h === 100 && big.at(50, 50) === '255,0,0,255' && big.at(150, 50) === '0,0,0,0' && big.at(98, 99) === '255,0,0,255'
+      && !window.svgDrawRan, `drawSvg: drawn at 200 x 100, sharp, its script not run (${big.at(50, 50)} / ${big.at(150, 50)} / ${big.at(98, 99)})`);
+    const dflt = await pixels(await drawSvg(new Blob([S('', '<rect x="290" y="140" width="10" height="10" fill="#00f"/>')]), 600, 300));
+    check(dflt.w === 600 && dflt.at(595, 295) === '0,0,255,255' && dflt.at(10, 10) === '0,0,0,0',
+      `drawSvg: an SVG with no size is drawn as 300 x 150, scaled (${dflt.at(595, 295)})`);
+    const inGz = await pixels(await drawSvg(gz, 20, 10));
+    check(inGz.at(2, 2) === '255,0,0,255', 'drawSvg: an .svgz');
+    let bad = '';
+    try { await drawSvg(new Blob(['<svg xmlns="http://www.w3.org/2000/svg" width="5" height="5"><rect></svg>']), 5, 5); } catch (e) { bad = e.message; }
+    check(bad.includes("couldn't draw this SVG"), `drawSvg: broken XML fails clearly (${bad})`);
+
+    // The op: SVG in, PNG / JPEG out, -w and -b.
+    const r = document.createElement('div');
+    const sapi = (await import('../public/ops/convert/op.js')).mount(r, { options: { to: 'png', quality: 90, width: '100', height: '', background: '' } });
+    await sapi.addFiles([{ path: 'half.svg', file: svgFile }]);
+    const stext = () => r.querySelector('.muted')?.textContent || '';
+    check(stext().startsWith('SVG, 20 × 10. As PNG: drawn at 100 × 50;') && r.querySelector('input').value === 'half.png',
+      `convert op: an SVG (${stext()})`);
+    r.querySelector('button.primary').click();
+    await wait(() => sapi.products.items.length);
+    const made = await pixels(sapi.products.items[0].blob);
+    check(made.w === 100 && made.h === 50 && made.at(20, 20) === '255,0,0,255' && made.at(80, 20) === '0,0,0,0',
+      `convert op: SVG -> PNG at -w 100 (${made.w} x ${made.h}, ${made.at(80, 20)})`);
+    sapi.setOptions({ to: 'jpeg', background: 'black', width: '' });
+    await sleep(100);
+    check(stext().includes('As JPEG: drawn at 20 × 10 (its viewBox); any transparency becomes black;'), `convert op: -b black (${stext()})`);
+    r.querySelector('button.primary').click();
+    await wait(() => sapi.products.items.length > 1);
+    const jp = await pixels(sapi.products.items.find((p) => p.name === 'half.jpg').blob);
+    const [jr, , , ] = jp.at(15, 5).split(',').map(Number), [lr, lg] = jp.at(3, 5).split(',').map(Number);
+    check(jp.w === 20 && jr < 20 && lr > 230 && lg < 30, `convert op: SVG -> JPEG over black (${jp.at(3, 5)} / ${jp.at(15, 5)})`);
+    await sapi.addFiles([{ path: 'huge.svg', file: new File([S(' width="20000" height="20000"')], 'huge.svg') }]);
+    check(r.textContent.includes('huge.svg: SVG, too big to draw: 20000 × 20000') && r.querySelector('button.primary').disabled,
+      'convert op: refuses an SVG too big to draw on the page');
+  }
+
+  // -b / --background: a colour behind the image.
+  {
+    const cv = OPS.find((o) => o.id === 'convert');
+    const pb = (line) => parseArgs(cv, tokenize(line));
+    check(pb('-b fff').values.background === '#ffffff' && pb('--background=#A0b1C2').values.background === '#a0b1c2'
+      && pb('-b Navy').values.background === 'navy' && pb('-b transparent').errors.length === 1 && pb('-b nocolour').errors.length === 1
+      && pb('-b #12345').errors[0] === "background must be a colour, like white, black or #ff8800 (not '#12345')"
+      && formatArgs(cv, { background: '#ff0000' }) === '-b #ff0000' && optionHelp(cv).some((l) => l.startsWith('-b, --background <colour>')),
+      `convert -b: hex (short or long), CSS names, not transparent (${JSON.stringify(pb('-b #12345'))})`);
+    check(colourRgb('#f80').join() === '255,136,0' && colourRgb('navy').join() === '0,0,128' && colourRgb('#010203').join() === '1,2,3',
+      'colourRgb: hex and names');
+    let cmsg = '';
+    try { colourRgb('nocolour'); } catch (e) { cmsg = e.message; }
+    check(cmsg === 'not a colour: nocolour', `colourRgb: an unknown name (${cmsg})`);
+    const pix = async (blob, x, y) => {
+      const b = await createImageBitmap(blob);
+      const c = new OffscreenCanvas(b.width, b.height).getContext('2d');
+      c.drawImage(b, 0, 0);
+      return [...c.getImageData(x, y, 1, 1).data].join();
+    };
+    const alpha = await fx2('img/alpha.png'); // (8, 20) transparent, (50, 20) opaque (200, 50, 50)
+    const onGreen = await convertImage(alpha, { type: 'png', background: '#00ff00' });
+    const viaQoi = await convertImage(alpha, { type: 'qoi', background: 'blue' });
+    const back = await convertImage(viaQoi, { type: 'png' });
+    const plain = await convertImage(alpha, { type: 'png' });
+    const bmpRed = await convertImage(await fx2('img/alpha.qoi'), { type: 'bmp', background: 'red' });
+    const bmpInfo = await imageInfo(bmpRed);
+    check(await pix(onGreen, 8, 20) === '0,255,0,255' && await pix(onGreen, 50, 20) === '200,50,50,255'
+      && await pix(back, 8, 20) === '0,0,255,255' && await pix(back, 50, 20) === '200,50,50,255' && await pix(plain, 8, 20) === '0,0,0,0'
+      && bmpInfo.format === 'bmp', `convertImage: background for PNG (canvas) and QOI (ours), none without it`);
+    const icoBg = await convertImage(alpha, { type: 'ico', background: '#00ff00' });
+    const icoPng = await convertImage(icoBg, { type: 'png' });
+    check(await pix(icoPng, 1, 1) === '0,255,0,255', `convertImage: an ICO with a background has no transparent padding (${await pix(icoPng, 1, 1)})`);
+    check(imageNotes({ ...(await imageInfo(alpha)) }, 'png', { background: 'navy' }).join('; ') === 'laid over navy: no transparency left; text dropped; lossless'
+      && imageNotes(await imageInfo(alpha), 'jpeg', { background: '#000000' })[0] === 'any transparency becomes #000000'
+      && imageNotes(await imageInfo(await fx2('img/opaque.png')), 'png', { background: 'red' }).join() === 'lossless',
+      'imageNotes: background');
+  }
 
   // The ops given options through mount, as the shell does.
   const wait = async (cond) => { for (let i = 0; i < 50 && !cond(); i++) await new Promise((r) => setTimeout(r, 50)); return cond(); };
@@ -2249,7 +2372,7 @@ async function shellTests() {
     check(cmd.value === 'convert -q 0x20 ' && !field('quality').hasAttribute('aria-invalid'), `shell: 0x hex from the popup (${cmd.value})`);
     type('convert -');
     key('Tab');
-    check(hint.textContent === '--quality  --width  --height', `shell: Tab lists the flags (${hint.textContent})`);
+    check(hint.textContent === '--quality  --width  --height  --background', `shell: Tab lists the flags (${hint.textContent})`);
     type('convert we');
     key('Tab');
     check(cmd.value === 'convert webp ' && field('to').value === 'webp', `shell: Tab completes a value (${cmd.value})`);
@@ -2310,7 +2433,7 @@ async function shellTests() {
       `shell: an alias completes, and its popup has its words set (${cmd.value})`);
     type('topng -');
     key('Tab');
-    check(hint.textContent === '--quality  --width  --height' && field('to').value === 'png', `shell: an alias's flags complete (${hint.textContent})`);
+    check(hint.textContent === '--quality  --width  --height  --background' && field('to').value === 'png', `shell: an alias's flags complete (${hint.textContent})`);
     type('help md5sum');
     await submit();
     check(d.getElementById('out').textContent.includes('hash - Checksums') && d.getElementById('out').textContent.includes('md5sum (hash md5)'),

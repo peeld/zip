@@ -574,9 +574,13 @@ doesn't check the CRC.
   `createImageBitmap` (with `imageOrientation: 'from-image'`, so EXIF
   rotation is applied), an `OffscreenCanvas` the same size, then
   `convertToBlob`. Both work in a worker, so it runs as the `image` task in
-  `lib/tasks.js`. JPEG and BMP get white behind the image first
-  (`alpha: false` context). Plan and later phases (resize, SVG, GIF
-  writing): [../todo/images.md](../todo/images.md).
+  `lib/tasks.js`. JPEG, BMP and PPM get white behind the image first
+  (`alpha: false` context), or the `background` colour (`convert -b`), which
+  flattens any output: on the canvas with a `fillRect` first, for our own
+  writers through `flatRows` (and for ICO, the padding square too). A CSS
+  colour name is turned into RGB by a 1×1 canvas (`colourRgb`; it works in a
+  worker). Plan and later phases (GIF writing, TIFF, crop):
+  [../todo/images.md](../todo/images.md).
 - **`convertToBlob` never fails for a type it can't write:** it returns a PNG.
   `canWrite(mime)` encodes a 1×1 canvas once per type and compares the
   result's type, and `convertImage` checks the real result too. Firefox 159
@@ -623,6 +627,24 @@ doesn't check the CRC.
 - **Damaged input:** Firefox's decoder gives back whatever it could decode
   of a cut-off or corrupt image (as `<img>` would show it) instead of an
   error; only a file with no usable header fails.
+- **SVG (and .svgz) to raster:** drawn on the page, never in the worker
+  (no `<img>` there; Chrome's `createImageBitmap` rejects an SVG Blob).
+  `imageInfo` reads the size from the root `<svg>` tag (`svgSize`): width and
+  height in any absolute CSS unit (96 px to the inch), else the `viewBox`
+  size, a width or height alone taking the other side from the viewBox ratio,
+  else 300 × 150 as browsers do. `sizedSvg` then rewrites only the root tag to
+  the output size (adding a `viewBox` of its own size if it had none), so
+  it's drawn sharp at that size rather than scaled from a small raster;
+  Firefox also draws an SVG with no size of its own as nothing. The op
+  (`drawSvg` in `ops/convert/op.js`) loads that through `<img>` from a
+  `blob:` URL, `img.decode()`, `drawImage` onto an `OffscreenCanvas`, and
+  hands the PNG to the `image` task like any other file (format, quality,
+  background). Limits: 32 MB of markup after gunzip, 64 megapixels drawn.
+  `imageNotes` says when its scripts won't run, when it links to other files
+  (an `<img>` loads none), and SMIL / CSS animation (first frame). `sniffFile`
+  calls it `svg` (`svgz` when gzipped: gunzip still takes those by default).
+  Not tried yet: Chrome (it may refuse to read back an SVG with
+  `<foreignObject>`; the op says so if the canvas throws a SecurityError).
 - **Preview (`core/viewer.js` Image mode):** `previewType(firstBytes, name)`
   says whether the viewer's first bytes are an image it can show: SVG (by
   its start: optional XML declaration, comments, doctype, then `<svg`),

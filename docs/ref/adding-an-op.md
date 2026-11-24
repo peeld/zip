@@ -44,8 +44,8 @@ public/
     source.js                     blobReader, streamReader, toStream (byte sources for the tar/cpio parsers)
     crc32.js                      CRC_INIT, crc32Update, crc32Final (slicing-by-8)
     hash.js                       ALGOS, hasher, hashStream, formatSums, parseSums, sumsFileAlgo, parseExpected
-    magic.js                      sniffType (magic numbers -> { ext, mime }), extForMime, sniffFile (routing), decodedName
-    image.js                      convertImage, imageInfo, imageNotes, canWrite, OUTPUTS (the browser's codecs; ICO writer)
+    magic.js                      sniffType (magic numbers -> { ext, mime }), extForMime, sniffFile (routing), decodedName, isSvg
+    image.js                      convertImage, imageInfo, imageNotes, canWrite, OUTPUTS (the browser's codecs; ICO writer), svgSize, sizedSvg, svgText, colourRgb
     imagefmt.js                   READERS (QOI, PNM, TGA), WRITERS (BMP, TGA, QOI, PPM): RGBA pixels, no canvas
   vendor/<name>/                  third-party libraries, unmodified, with LICENSE + VERSION (none yet)
   ops/

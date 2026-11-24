@@ -59,7 +59,7 @@ export const OPS = [
   { id: 'uniso', group: 'archive', title: 'Open an ISO image', description: 'View the files in a CD / DVD image (.iso: ISO 9660, Joliet, Rock Ridge) and extract them.',
     input: { accept: '.iso,application/x-iso9660-image', sniff: ['iso'] } },
   { id: 'gunzip', group: 'compress', title: 'Decompress a gzip file', description: 'Decompress a .gz file.',
-    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz'] } },
+    input: { accept: '.gz,.tgz,application/gzip,application/x-gzip', sniff: ['gz', 'tar.gz', 'cpio.gz', 'svgz'] } },
   { id: 'unxz', group: 'compress', title: 'Decompress an xz file', description: 'Decompress a .xz or .lzma file.', aliases: { unlzma: '' },
     input: { accept: '.xz,.lzma,.txz,.tlz,application/x-xz', sniff: ['xz', 'tar.xz', 'cpio.xz', 'lzma'] } },
   { id: 'unzstd', group: 'compress', title: 'Decompress a zstd file', description: 'Decompress a .zst (Zstandard) file.',
@@ -116,11 +116,11 @@ export const OPS = [
   { id: 'encode', group: 'encode', title: 'Encode as text', description: 'Encode one file as base32, ascii85, quoted-printable or URL-encoded text.',
     input: {}, options: [textFormat('the text format')], aliases: { base32: 'base32', base32hex: 'base32hex', ascii85: 'ascii85' } },
   // Takes images, but only while it's the running command: a dropped image still goes to zip.
-  { id: 'convert', group: 'image', title: 'Convert an image', description: 'Convert an image to PNG, JPEG, WebP, ICO, BMP, TGA, QOI or PPM.',
-    input: { accept: '.png,.jpg,.jpeg,.jfif,.jpe,.gif,.webp,.bmp,.dib,.ico,.cur,.avif,.qoi,.tga,.icb,.vda,.vst,.pbm,.pgm,.ppm,.pnm,.pam,'
+  { id: 'convert', group: 'image', title: 'Convert an image', description: 'Convert an image (SVG too) to PNG, JPEG, WebP, ICO, BMP, TGA, QOI or PPM.',
+    input: { accept: '.png,.jpg,.jpeg,.jfif,.jpe,.gif,.webp,.bmp,.dib,.ico,.cur,.avif,.qoi,.tga,.icb,.vda,.vst,.pbm,.pgm,.ppm,.pnm,.pam,.svg,.svgz,'
       + 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/x-icon,image/vnd.microsoft.icon,image/avif,image/qoi,image/x-tga,'
-      + 'image/x-portable-bitmap,image/x-portable-graymap,image/x-portable-pixmap,image/x-portable-anymap',
-      sniff: ['png', 'jpg', 'gif', 'webp', 'bmp', 'avif', 'qoi'] },
+      + 'image/x-portable-bitmap,image/x-portable-graymap,image/x-portable-pixmap,image/x-portable-anymap,image/svg+xml',
+      sniff: ['png', 'jpg', 'gif', 'webp', 'bmp', 'avif', 'qoi', 'svg', 'svgz'] },
     options: [
       { name: 'to', positional: true, type: 'choice', default: 'png', help: 'the format to write',
         values: [['png', 'PNG'], ['jpeg', 'JPEG'], ['webp', 'WebP'], ['ico', 'ICO'], ['bmp', 'BMP'], ['tga', 'TGA'], ['qoi', 'QOI'], ['ppm', 'PPM']],
@@ -128,6 +128,7 @@ export const OPS = [
       { name: 'quality', short: 'q', type: 'int', min: 1, max: 100, default: 90, help: 'JPEG / WebP quality' },
       { name: 'width', short: 'w', type: 'size', remember: false, help: 'resize: pixels or %' },
       { name: 'height', short: 'h', type: 'size', remember: false, help: 'resize: pixels or % (with width: fit inside both)' },
+      { name: 'background', short: 'b', type: 'colour', placeholder: 'white', help: 'fill transparency with this colour (JPEG / BMP / PPM: white if not set)' },
     ],
     aliases: { topng: 'png', tojpg: 'jpeg', towebp: 'webp', toico: 'ico' } },
   // Takes any files while running. A checksum list dropped with them

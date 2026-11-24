@@ -15,7 +15,9 @@
 // Types: choice (one of `values`), set (some of `values`: `md5,sha1`, or
 // several bare words when it's the positional), int (min / max; no default
 // = blank, the op picks), size ('800' or '50%'; '' = not set), bool (--name /
-// --no-name; `shortOff: '0'` makes -0 mean --no-name), text. Values are
+// --no-name; `shortOff: '0'` makes -0 mean --no-name), colour (an opaque
+// colour: '#rgb', '#rrggbb' (the # can be left out) or a CSS name such as
+// 'black'; kept as '#rrggbb' or the name in lower case; '' = not set), text. Values are
 // kept as strings for size / text / choice, arrays (in `values` order) for
 // set, numbers for int (typed in decimal or 0x hex), booleans for bool.
 // `what` names the value in help (`--seek <offset>`). `remember: false`:
@@ -107,6 +109,15 @@ function convert(o, raw) {
       const m = SIZE.exec(v);
       if (!m || Number(m[1]) === 0) throw `${o.name} must be pixels or a percentage, like 800 or 50% (not '${v}')`;
       return m[2] === '%' ? `${Number(m[1])}%` : String(Number(m[1]));
+    }
+    case 'colour': {
+      if (v === '') return '';
+      const hex = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v);
+      if (hex) return `#${(hex[1].length === 3 ? hex[1].replace(/./g, '$&$&') : hex[1]).toLowerCase()}`;
+      const name = v.toLowerCase();
+      if (/^[a-z]+$/.test(name) && !['transparent', 'currentcolor', 'inherit', 'initial', 'unset', 'revert'].includes(name)
+        && (typeof CSS === 'undefined' || CSS.supports('color', name))) return name;
+      throw `${o.name} must be a colour, like white, black or #ff8800 (not '${v}')`;
     }
     case 'bool':
       if (/^(1|true|yes|on)$/i.test(v)) return true;
@@ -203,7 +214,7 @@ export function formatArgs(op, values, base = defaults(op)) {
 export function optionHelp(op) {
   const rows = (op.options || []).map((o) => {
     const what = o.what || (o.type === 'choice' || o.type === 'set' ? o.values.map(([id]) => id).join('|')
-      : o.type === 'int' ? (o.min != null && o.max != null ? `${o.min}-${o.max}` : 'n') : o.type === 'size' ? 'px|%' : o.type === 'bool' ? '' : o.name);
+      : o.type === 'int' ? (o.min != null && o.max != null ? `${o.min}-${o.max}` : 'n') : o.type === 'size' ? 'px|%' : o.type === 'colour' ? 'colour' : o.type === 'bool' ? '' : o.name);
     const flag = o.positional ? `[${what}]${o.type === 'set' ? ' …' : ''}`
       : o.shortOff ? `-${o.shortOff}, --no-${o.name}`
         : `${o.short ? `-${o.short}, ` : '    '}--${o.name}${what ? ` <${what}>` : ''}`;
@@ -268,7 +279,7 @@ export function optionsForm(op, values, onChange) {
     } else {
       f = el('input', {
         id, spellcheck: false, autocomplete: 'off',
-        size: o.type === 'int' ? 5 : o.type === 'size' ? 8 : 24,
+        size: o.type === 'int' ? 5 : o.type === 'size' || o.type === 'colour' ? 8 : 24,
         placeholder: o.placeholder || (o.type === 'size' ? 'px or %' : ''),
         inputMode: o.type === 'int' ? 'numeric' : 'text',
       });
@@ -281,7 +292,7 @@ export function optionsForm(op, values, onChange) {
       el('span', { className: 'opt-field' }, f),
       el('span', { className: 'opt-help muted', textContent: [o.help, flag].filter(Boolean).join('  ') }));
   });
-  const typed = (o) => ['int', 'size', 'text'].includes(o.type); // fields that can hold any text
+  const typed = (o) => ['int', 'size', 'colour', 'text'].includes(o.type); // fields that can hold any text
   const mark = (bad = {}) => {
     for (const o of op.options || []) {
       const f = fields[o.name];
