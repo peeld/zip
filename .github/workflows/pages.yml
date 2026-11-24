@@ -34,8 +34,9 @@ jobs:
       # Firefox comes preinstalled on ubuntu-latest. zip/unzip are needed for the fixtures and for `unzip -t`;
       # cpio makes the cpio fixtures and checks the cpios the browser writes (those tests are skipped without it);
       # zstd, bzip2 and p7zip-full make the .zst, .bz2 and 7-Zip fixtures (likewise).
+      # genisoimage makes the ISO fixtures and also ships mkzftree for the zisofs one (Ubuntu has no zisofs-tools).
       - name: Install zip tools
-        run: sudo apt-get update -q && sudo apt-get install -yq zip unzip cpio zstd bzip2 p7zip-full genisoimage zisofs-tools
+        run: sudo apt-get update -q && sudo apt-get install -yq zip unzip cpio zstd bzip2 p7zip-full genisoimage
       # brotli makes the .br fixtures and checks the .br the browser writes (skipped without it, and when
       # the runner's Firefox has no native brotli).
       # Pillow makes the image fixtures and checks the images the browser converts (skipped without it).
